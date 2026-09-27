@@ -1,4 +1,3 @@
-# --- Secrets ---------------------------------------------------------------
 .env
 .env.*
 !.env.example
@@ -6,12 +5,10 @@
 *.key
 secrets/
 
-# --- Private study material: MUST NEVER be committed -----------------------
 _PRIVATE_KNOWLEDGE/
 KNOWLEDGE.md
 NOTES-PRIVATE.md
 
-# --- Python ----------------------------------------------------------------
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -22,7 +19,6 @@ dist/
 venv/
 env/
 
-# --- Tooling ---------------------------------------------------------------
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
@@ -30,7 +26,6 @@ env/
 coverage.xml
 htmlcov/
 
-# --- Editors / OS ----------------------------------------------------------
 .idea/
 .vscode/
 .DS_Store

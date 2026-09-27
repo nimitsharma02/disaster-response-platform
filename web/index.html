@@ -180,7 +180,7 @@ async function api(path, options = {}) {
   return { body, headers: response.headers };
 }
 
-/* ---------------------------------------------------------------- incidents */
+/* incidents */
 
 async function loadDisasters() {
   try {
@@ -243,7 +243,7 @@ function selectDisaster(id) {
   loadReports();
 }
 
-/* ---------------------------------------------------------------- resources */
+/* resources */
 
 async function loadResources() {
   if (!selectedId || !selectedLatLng) return;
@@ -288,7 +288,7 @@ async function loadResources() {
   }
 }
 
-/* ------------------------------------------------------------------ reports */
+/* reports */
 
 async function loadReports() {
   if (!selectedId) return;
@@ -316,7 +316,7 @@ async function loadReports() {
   }
 }
 
-/* -------------------------------------------------------------------- create */
+/* create */
 
 async function login(username, password) {
   const { body } = await api("/auth/login", {
@@ -366,7 +366,7 @@ $("radius").addEventListener("input", (e) => { $("radiusLabel").textContent = e.
 $("radius").addEventListener("change", loadResources);
 $("typeFilter").addEventListener("change", loadResources);
 
-/* ----------------------------------------------------------------- realtime */
+/* realtime */
 
 function connectWebSocket() {
   const scheme = location.protocol === "https:" ? "wss" : "ws";
@@ -379,8 +379,7 @@ function connectWebSocket() {
   socket.onclose = () => {
     $("wsDot").className = "status-dot down";
     $("wsText").textContent = "disconnected — retrying";
-    // Reconnect, because a dropped socket must not silently stop the map
-    // updating. A production client would back off exponentially.
+    // Reconnect, because a dropped socket must not silently stop the map updating. A production client would back off exponentially.
     setTimeout(connectWebSocket, 3000);
   };
   socket.onmessage = (message) => {

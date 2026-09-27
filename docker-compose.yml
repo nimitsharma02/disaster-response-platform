@@ -2,7 +2,6 @@ name: disaster-response
 
 services:
   db:
-    # postgis/postgis bundles PostGIS 3.4 with Postgres 16 - no manual extension build.
     image: postgis/postgis:16-3.4
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-drp}
@@ -31,8 +30,6 @@ services:
       retries: 20
 
   mock-services:
-    # Deliberately a SEPARATE process behind a real HTTP boundary, so timeouts,
-    # retries and the circuit breaker are exercised for real rather than faked.
     build: .
     command: ["uvicorn", "mock_services.main:app", "--host", "0.0.0.0", "--port", "9000"]
     environment:
@@ -68,21 +65,12 @@ services:
       - ./scripts:/srv/scripts
       - ./migrations:/srv/migrations
       - ./mock_services:/srv/mock_services
-      # The demo map client, served by the API at /demo/.
       - ./web:/srv/web
-      # Writable: `python -m scripts.export_openapi` writes docs/openapi.json
-      # here, so the generated spec lands in the repo rather than inside the
-      # container where nobody would ever see it.
       - ./docs:/srv/docs
-      # Mounted so pytest/ruff configuration can be changed without an image
-      # rebuild. Without this the container silently keeps the copy baked in at
-      # build time, and edits to [tool.pytest.ini_options] appear to do nothing.
       - ./pyproject.toml:/srv/pyproject.toml:ro
       - ./alembic.ini:/srv/alembic.ini:ro
 
   worker:
-    # Optional. The API is fully functional without it - the worker only pre-warms
-    # caches, it is never on the request critical path.
     build: .
     env_file: [.env]
     environment:
