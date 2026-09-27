@@ -1,11 +1,4 @@
-"""Structured logging.
-
-Logs are events with fields, not sentences with values glued into them. Every
-line carries the ``request_id`` of the request that produced it, bound once in
-middleware via a ``ContextVar`` so no function has to thread it through its
-signature. ``LOG_FORMAT=json`` emits machine-parseable output for a log shipper;
-``console`` is the readable local default.
-"""
+"""Structured logging."""
 
 from __future__ import annotations
 
@@ -17,7 +10,6 @@ import structlog
 
 from app.core.config import settings
 
-# Bound by RequestContextMiddleware; read by the structlog processor below.
 request_id_ctx: ContextVar[str | None] = ContextVar("request_id", default=None)
 
 
@@ -51,16 +43,11 @@ def configure_logging() -> None:
     structlog.configure(
         processors=[*shared_processors, renderer],
         wrapper_class=structlog.make_filtering_bound_logger(level),
-        # stdlib LoggerFactory, not PrintLoggerFactory: the `add_logger_name`
-        # processor reads `logger.name`, which only a stdlib logger has. It also
-        # means output from libraries that log through stdlib lands in the same
-        # stream with the same handler.
         logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )
 
     logging.basicConfig(format="%(message)s", stream=sys.stdout, level=level)
-    # uvicorn.access duplicates our own access log line, so silence it and keep ours.
     logging.getLogger("uvicorn.access").disabled = True
     for noisy in ("httpx", "httpcore", "asyncio", "multipart"):
         logging.getLogger(noisy).setLevel(logging.WARNING)

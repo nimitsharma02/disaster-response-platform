@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Disaster Response Coordination Platform",
-    "description": "\nBackend for coordinating disaster response: incident records, automatic location\nresolution from free text, geospatial resource search, aggregated community\nreports, and a live event stream.\n\n### Getting started\n\n1. `POST /api/v1/auth/login` with `{\"username\": \"admin\", \"password\": \"admin123\"}`\n2. Click **Authorize** above and paste the `access_token`\n3. `POST /api/v1/disasters` - omit the coordinates and let the service resolve\n   the location from your description\n\n### Demo accounts\n\n| username | role | permissions |\n|---|---|---|\n| `admin` | admin | full access, including `DELETE` |\n| `contributor` | contributor | create; update **only their own** records |\n| `responder` | responder | read-only |\n\n### Things worth looking at\n\n* **Geospatial** - `GET /disasters/{id}/resources` uses PostGIS `ST_DWithin`\n  against a GiST-indexed `geography(Point, 4326)` column.\n* **Caching** - `GET /disasters/{id}/reports` returns `X-Cache: HIT|MISS|STALE`.\n* **Failure handling** - stop the mock provider\n  (`docker compose stop mock-services`) and re-request reports: you get a `200`\n  with `degraded: true`, not a `500`.\n* **Real-time** - `curl -N http://localhost:8000/api/v1/events/stream`, then\n  create a disaster in another terminal.\n",
+    "description": "\nBackend for coordinating disaster response: incident records, location resolution\nfrom free text, geospatial resource search, community reports and live updates.\n\nGetting started:\n\n1. `POST /api/v1/auth/login` with `{\"username\": \"admin\", \"password\": \"admin123\"}`\n2. Click Authorize above and paste the `access_token`\n3. `POST /api/v1/disasters` without coordinates, the location is resolved from\n   the description\n\nDemo accounts:\n\n- `admin` / `admin123` - full access including DELETE\n- `contributor` / `contributor123` - can create, and update only their own records\n- `responder` / `responder123` - read only\n\nWorth a look:\n\n- `GET /disasters/{id}/resources` uses PostGIS ST_DWithin on a GiST indexed\n  geography column\n- `GET /disasters/{id}/reports` returns an X-Cache header of HIT, MISS or STALE\n- Stop the mock provider with `docker compose stop mock-services` and request\n  reports again, you get a 200 with `degraded: true` instead of a 500\n- `curl -N http://localhost:8000/api/v1/events/stream` for the live event feed\n",
     "contact": {
       "name": "API support",
       "email": "support@example.com"
@@ -40,7 +40,7 @@
           "Health"
         ],
         "summary": "Readiness probe: dependency checks",
-        "description": "Check every dependency and report per-component status.\n\nReturns 503 when a hard dependency is down, so an orchestrator or load\nbalancer can act on the status code alone without parsing the body.\n\nThe cache is a **soft** dependency: with ``CACHE_ALLOW_MEMORY_FALLBACK`` the\napp still serves correctly without Redis, just without a shared cache or\ncross-worker events. It is reported as degraded, not failed.",
+        "description": "Check every dependency and report per-component status.",
         "operationId": "readiness_api_v1_health_ready_get",
         "responses": {
           "200": {
@@ -62,7 +62,7 @@
           "Authentication"
         ],
         "summary": "Exchange credentials for a JWT",
-        "description": "Authenticate and return a bearer token.\n\nSeeded demo accounts (created by ``scripts/seed.py``):\n\n| username    | role        | can do                                  |\n|-------------|-------------|-----------------------------------------|\n| admin       | admin       | everything, including DELETE            |\n| contributor | contributor | create; update **only their own** records |\n| responder   | responder   | read-only                               |",
+        "description": "Authenticate and return a bearer token.",
         "operationId": "login_api_v1_auth_login_post",
         "requestBody": {
           "content": {
@@ -160,7 +160,7 @@
           "Authentication"
         ],
         "summary": "List the seeded demo accounts",
-        "description": "Convenience endpoint for exploring the demo.\n\nAuthentication is required, and only public fields are returned - no hashes.\nA real system would restrict this to admins; it is open to any authenticated\ncaller here purely so a reviewer can see the seeded roles.",
+        "description": "Convenience endpoint for exploring the demo.",
         "operationId": "list_users_api_v1_auth_users_get",
         "responses": {
           "200": {
@@ -191,7 +191,7 @@
           "Resources"
         ],
         "summary": "Find resources near a disaster",
-        "description": "Resources within ``radius_km`` of a point, nearest first.\n\n**How the search works.** The radius filter is a PostGIS\n``ST_DWithin(location, point, radius_km * 1000)`` against a\n``geography(Point, 4326)`` column with a **GiST index**. ``ST_DWithin`` is\nindex-accelerated: the planner uses the index to discard rows by bounding\nbox first and computes exact distances only on the survivors.\n``ST_Distance(...) < r`` would look equivalent and force a full table scan.\n\nDistances come back from the database in kilometres, and ordering happens in\nSQL so ``LIMIT`` returns the genuinely nearest rows rather than the first N\nmatches re-sorted in Python.\n\n**Search centre.** Supply ``lat``/``lng`` to search around an arbitrary\npoint (a responder's own position). Omit them and the disaster's own resolved\nlocation is used. If the disaster has no location and none is given, the\nresponse is a 422 - \"we do not know where to look\" is not the same answer as\n\"there is nothing nearby\".\n\n**Radius cap.** ``radius_km`` is capped at ``MAX_RADIUS_KM`` so one request\ncannot be used to scan the whole table.",
+        "description": "Resources within radius_km of a point, nearest first.",
         "operationId": "find_nearby_resources_api_v1_disasters__disaster_id__resources_get",
         "parameters": [
           {
@@ -421,7 +421,7 @@
           "Resources"
         ],
         "summary": "Create a resource (admin only)",
-        "description": "Register a resource.\n\n**Authorization:** ``admin`` only. Resources are reference data that the\nwhole response depends on - a wrong shelter location sends people to the\nwrong place - so writes are deliberately narrower than for incidents.\n\nCoordinates are required here, unlike on a disaster: a resource with no\nposition can never be returned by a proximity search.",
+        "description": "Register a resource.",
         "operationId": "create_resource_api_v1_resources_post",
         "security": [
           {
@@ -551,7 +551,7 @@
           "Reports"
         ],
         "summary": "Community and official reports for a disaster",
-        "description": "Aggregated reports from two external providers.\n\n**Sources.** A mock social-media feed and a mock official bulletin feed, each\nrunning as a separate service behind a real HTTP boundary. Their payload\nshapes differ and are normalised into one ``Report`` model, so adding or\nswapping a provider changes only its client.\n\n**Caching.** Responses are cached for ``CACHE_TTL_REPORTS`` (default 5\nminutes) in Redis, fronted by a short in-process tier. The ``X-Cache`` header\nand ``meta.cache`` report ``HIT``, ``MISS`` or ``STALE``, and\n``meta.age_seconds`` gives the age of the underlying data. Pass\n``?refresh=true`` to force a re-fetch.\n\n**Failure handling.** Providers are called concurrently, and each one's\noutcome appears in ``meta.sources`` as ``ok``, ``empty``, ``failed`` or\n``circuit_open``:\n\n* one provider down -> the other's reports are still returned,\n  ``meta.degraded = true``, and the partial result is cached only briefly\n  so recovery is picked up quickly;\n* both down, something cached -> the cached payload is served with\n  ``X-Cache: STALE`` and ``meta.degraded = true``. A responder is far better\n  served by five-minute-old reports than by an error;\n* both down, nothing cached -> 502, the only case where this endpoint fails.\n\n**Prioritisation.** Each report is scored by a deterministic, explainable\nclassifier into ``critical``/``high``/``medium``/``low``, with\n``matched_signals`` listing the rules that fired. Results are sorted most\nurgent first.",
+        "description": "Aggregated reports from two external providers.",
         "operationId": "get_reports_api_v1_disasters__disaster_id__reports_get",
         "parameters": [
           {
@@ -657,7 +657,7 @@
           "Disasters"
         ],
         "summary": "Create a disaster",
-        "description": "Create an incident.\n\n**Location resolution.** If ``latitude``/``longitude`` are omitted, the\nservice infers the location from ``description`` - extracting a place name\nand geocoding it. Explicit coordinates always win, and the resolution method\nis reported back in ``location.source`` with a ``location.confidence`` score.\n\nResolution never blocks the write: if nothing can be resolved, the incident\nis still created with ``location.point = null``.\n\n**Authorization:** ``admin`` or ``contributor``.\n\n**Emits:** ``disaster_created`` on the real-time channel.",
+        "description": "Create an incident.",
         "operationId": "create_disaster_api_v1_disasters_post",
         "security": [
           {
@@ -732,7 +732,7 @@
           "Disasters"
         ],
         "summary": "List disasters with filters",
-        "description": "List incidents.\n\nFilters combine with AND. Supplying ``lat``/``lng``/``radius_km`` restricts\nresults to incidents whose resolved location falls inside the radius, using\nthe same PostGIS ``ST_DWithin`` path as the nearby-resources search, and adds\na ``distance_km`` to each item.\n\nThis endpoint is public (no token needed) so the map demo can render without\ncredentials. Every write endpoint is authenticated.",
+        "description": "List incidents.",
         "operationId": "list_disasters_api_v1_disasters_get",
         "parameters": [
           {
@@ -987,7 +987,7 @@
           "Disasters"
         ],
         "summary": "Partially update a disaster",
-        "description": "Update an incident. Only the fields present in the body are changed.\n\n**Authorization:** ``admin`` may update any record; ``contributor`` may\nupdate **only records they created** - a 403 otherwise. This is the\nownership rule the brief asks to be demonstrated, and it is enforced in the\nservice layer where the record is loaded.\n\n**Location.** Changing ``description`` re-runs resolution unless explicit\ncoordinates are supplied in the same request. Pass\n``\"reresolve_location\": true`` to force it.\n\n**Emits:** ``disaster_updated``, carrying the list of changed fields.",
+        "description": "Update an incident.",
         "operationId": "update_disaster_api_v1_disasters__disaster_id__patch",
         "security": [
           {
@@ -1074,7 +1074,7 @@
           "Disasters"
         ],
         "summary": "Delete a disaster (admin only)",
-        "description": "Delete an incident.\n\n**Authorization:** ``admin`` only - the second half of the demonstrated\nauthorization rule. A contributor receives 403 even for their own record,\nbecause deletion destroys shared situational awareness in a way that editing\ndoes not.\n\nReturns 204 with no body, and records the deletion in the audit log.\n\n**Emits:** ``disaster_deleted``.",
+        "description": "Delete an incident.",
         "operationId": "delete_disaster_api_v1_disasters__disaster_id__delete",
         "security": [
           {
@@ -1232,7 +1232,7 @@
           "Real-time"
         ],
         "summary": "Server-Sent Events stream of disaster events",
-        "description": "Subscribe to live events over SSE.\n\nVerify it with::\n\n    curl -N http://localhost:8000/api/v1/events/stream\n\nthen create or update a disaster in another terminal and watch the event\narrive. A ``: heartbeat`` comment line is emitted every 20s to keep\nintermediaries from closing an idle connection.",
+        "description": "Subscribe to live events over SSE.",
         "operationId": "sse_stream_api_v1_events_stream_get",
         "responses": {
           "200": {
@@ -1551,7 +1551,7 @@
         "additionalProperties": false,
         "type": "object",
         "title": "DisasterUpdate",
-        "description": "PATCH body. Every field optional; absent means \"leave unchanged\".\n\n``exclude_unset`` at the call site is what distinguishes \"not provided\" from\n\"explicitly set to null\" - which is why partial update needs its own model\nrather than a create model with defaults."
+        "description": "PATCH body."
       },
       "GeoPoint": {
         "properties": {
@@ -1584,7 +1584,7 @@
           "geojson"
         ],
         "title": "GeoPoint",
-        "description": "A resolved coordinate pair.\n\nExposed as explicit ``latitude``/``longitude`` rather than a GeoJSON\n``[lng, lat]`` array. GeoJSON's longitude-first ordering is a notorious\nsource of transposed-coordinate bugs; named fields make the mistake\nimpossible for an API consumer to make silently."
+        "description": "A resolved coordinate pair."
       },
       "HTTPValidationError": {
         "properties": {
@@ -1679,7 +1679,7 @@
         },
         "type": "object",
         "title": "LocationInfo",
-        "description": "Resolved location plus its provenance.\n\n``source`` and ``confidence`` travel with the coordinates so a consumer can\ndecide how much to trust them. An inferred point and a human-entered point\nare not interchangeable when you are dispatching a rescue team."
+        "description": "Resolved location plus its provenance."
       },
       "LoginRequest": {
         "properties": {
@@ -1742,7 +1742,7 @@
           "items"
         ],
         "title": "NearbySearchResponse",
-        "description": "Echoes the effective search parameters alongside the results.\n\nThe centre point may have been derived from the disaster rather than sent by\nthe caller, so returning it removes any ambiguity about what was searched."
+        "description": "Echoes the effective search parameters alongside the results."
       },
       "PageMeta": {
         "properties": {
@@ -1913,7 +1913,7 @@
           "timestamp"
         ],
         "title": "ReadinessStatus",
-        "description": "Readiness is about dependencies; liveness is about the process.\n\nKept separate so an orchestrator restarts a hung process but merely stops\nrouting traffic to an instance whose database is briefly unreachable."
+        "description": "Readiness is about dependencies; liveness is about the process."
       },
       "Report": {
         "properties": {
@@ -1990,7 +1990,7 @@
           "created_at"
         ],
         "title": "Report",
-        "description": "One normalised community or official report.\n\nEvery provider gets flattened into this. The mock social service returns\n``{content, user, created_at}``; the official bulletin feed returns\n``{headline, body, issued_at, agency}``. Normalising at the boundary means\nthe rest of the system never branches on provider.",
+        "description": "One normalised community or official report.",
         "example": {
           "author": "citizen123",
           "content": "Need drinking water near Manhattan, we have been without since 6am",
@@ -2063,7 +2063,7 @@
           "age_seconds"
         ],
         "title": "ReportsMeta",
-        "description": "Everything the caller needs to judge how much to trust this payload.\n\nA degraded response returns 200, not 502: stale reports are far more useful\nto a responder than an error page. But it must say so, loudly and in-band -\nsilently serving stale data as if it were live would be the actual failure."
+        "description": "Everything the caller needs to judge how much to trust this payload."
       },
       "ReportsResponse": {
         "properties": {
@@ -2370,7 +2370,7 @@
           "created_at"
         ],
         "title": "UserPublic",
-        "description": "The only user representation that ever leaves the service.\n\n``password_hash`` is absent by construction rather than stripped on the way\nout - a field that does not exist on the response model cannot be leaked by\na future careless change."
+        "description": "The only user representation that ever leaves the service."
       },
       "UserRole": {
         "type": "string",

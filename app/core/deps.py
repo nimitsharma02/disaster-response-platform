@@ -1,17 +1,4 @@
-"""FastAPI dependencies: database session, current user, role gates, pagination.
-
-Authorization is split across two places on purpose, and the split is the design:
-
-* **Role gates live here**, as route dependencies. "Only an admin may call
-  DELETE" is a property of the endpoint and can be decided before any data is
-  loaded - so it is, and it shows up in the OpenAPI document.
-* **Ownership checks live in the service layer.** "A contributor may edit only
-  their own incident" cannot be decided until the record exists, so it belongs
-  where the record is loaded (``disaster_service.assert_can_modify``).
-
-Trying to do both in one place produces either a dependency that loads records
-(and then loads them again in the service) or a service that knows about HTTP.
-"""
+"""FastAPI dependencies: database session, current user, role gates,."""
 
 from __future__ import annotations
 
@@ -32,8 +19,6 @@ from app.schemas.common import PaginationParams
 
 log = structlog.get_logger(__name__)
 
-# auto_error=False so a missing header reaches our own handler and produces an
-# RFC 9457 problem document, rather than FastAPI's default {"detail": ...}.
 bearer_scheme = HTTPBearer(auto_error=False, description="JWT from POST /auth/login")
 
 
@@ -50,12 +35,7 @@ async def get_current_user(
     session: DbSession,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)] = None,
 ) -> AuthenticatedUser:
-    """Resolve the caller from the ``Authorization: Bearer`` header.
-
-    The token is verified cryptographically and then the user is re-read from
-    the database. That second step is what makes deactivation immediate: a valid
-    but revoked token must not keep working until it expires.
-    """
+    """Resolve the caller from the Authorization: Bearer header."""
     if credentials is None or not credentials.credentials:
         raise UnauthorizedError("Missing bearer token. Obtain one from POST /api/v1/auth/login.")
 
@@ -75,13 +55,11 @@ async def get_current_user(
 
     user = await user_repo.get_by_id(session, user_uuid)
     if user is None:
-        # Valid signature, but the user no longer exists.
         raise UnauthorizedError("Token refers to a user that no longer exists")
     if not user.is_active:
         raise ForbiddenError("This account has been deactivated")
 
     authenticated = AuthenticatedUser(id=user.id, username=user.username, role=user.role)
-    # Bind onto the request so the access log and audit trail can name the actor.
     request.state.user = authenticated
     return authenticated
 
@@ -96,11 +74,7 @@ CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
 
 
 def require_roles(*allowed: UserRole):
-    """Build a dependency that admits only the listed roles.
-
-    Returns a dependency rather than a decorator so FastAPI records it in the
-    OpenAPI schema and it composes with the other dependencies on the route.
-    """
+    """Build a dependency that admits only the listed roles."""
 
     async def _guard(user: CurrentUser) -> AuthenticatedUser:
         if user.role not in allowed:
@@ -120,7 +94,6 @@ def require_roles(*allowed: UserRole):
     return _guard
 
 
-# Named gates, so a route reads as policy rather than as a list of enum members.
 RequireAdmin = Annotated[AuthenticatedUser, Depends(require_roles(UserRole.ADMIN))]
 RequireWriter = Annotated[
     AuthenticatedUser, Depends(require_roles(UserRole.ADMIN, UserRole.CONTRIBUTOR))

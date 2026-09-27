@@ -1,10 +1,4 @@
-"""Community report schemas.
-
-Reports are *not* stored in our database - they are fetched from external
-providers, normalised into this shape, classified, and cached. The normalised
-model is the contract our clients depend on, which is what lets a provider's
-payload change without breaking them.
-"""
+"""Community report schemas."""
 
 from __future__ import annotations
 
@@ -16,13 +10,7 @@ from app.db.models.enums import ReportPriority
 
 
 class Report(BaseModel):
-    """One normalised community or official report.
-
-    Every provider gets flattened into this. The mock social service returns
-    ``{content, user, created_at}``; the official bulletin feed returns
-    ``{headline, body, issued_at, agency}``. Normalising at the boundary means
-    the rest of the system never branches on provider.
-    """
+    """One normalised community or official report."""
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -50,7 +38,6 @@ class Report(BaseModel):
     location_hint: str | None = None
     verified: bool = False
 
-    # Assigned by services/classification.py, not by the provider.
     priority: ReportPriority = ReportPriority.LOW
     priority_score: float = Field(default=0.0, ge=0, le=1)
     matched_signals: list[str] = Field(
@@ -61,12 +48,7 @@ class Report(BaseModel):
 
 
 class ReportsMeta(BaseModel):
-    """Everything the caller needs to judge how much to trust this payload.
-
-    A degraded response returns 200, not 502: stale reports are far more useful
-    to a responder than an error page. But it must say so, loudly and in-band -
-    silently serving stale data as if it were live would be the actual failure.
-    """
+    """Everything the caller needs to judge how much to trust this payload."""
 
     cache: str = Field(description="HIT | MISS | STALE | BYPASS")
     age_seconds: float = Field(description="Age of the underlying data")

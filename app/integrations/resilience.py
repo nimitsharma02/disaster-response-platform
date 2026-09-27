@@ -1,26 +1,4 @@
-"""Resilience primitives for outbound calls: retry, circuit breaker, rate limiter.
-
-Three different failures, three different tools. Conflating them is the usual
-mistake, so they are kept separate here:
-
-* **Retry** handles a *transient* fault - one dropped packet, one 503 during a
-  deploy. It helps only if the fault is brief and the call is idempotent.
-* **Circuit breaker** handles a *sustained* fault. Once a dependency is properly
-  down, retrying is actively harmful: it burns our own latency budget and keeps
-  hammering a service that is trying to recover. The breaker fails fast instead.
-* **Rate limiter** handles a *policy* constraint - Nominatim permits one request
-  per second and will ban an IP that ignores that. Nothing is broken; we simply
-  must not exceed a quota.
-
-Why retries use **exponential backoff with full jitter**: without jitter, every
-client that failed at the same moment retries at the same moment, reconverging
-into a synchronised thundering herd. Randomising across the whole window spreads
-them out. (AWS's "Exponential Backoff and Jitter" is the canonical write-up.)
-
-Why retries are only for 5xx/timeouts: a 400 or 422 will fail identically every
-time. Retrying a deterministic client error just multiplies the latency of a
-request that was always going to fail.
-"""
+"""Resilience primitives for outbound calls: retry, circuit breaker,."""
 
 from __future__ import annotations
 
@@ -53,9 +31,7 @@ class CircuitOpenError(Exception):
     """The breaker is open; the call was rejected without being attempted."""
 
 
-# --------------------------------------------------------------------------- #
 # Retry
-# --------------------------------------------------------------------------- #
 
 
 async def retry_async(
@@ -67,11 +43,7 @@ async def retry_async(
     max_delay: float = 5.0,
     retry_on: tuple[type[Exception], ...] = (TransientError,),
 ) -> T:
-    """Call ``operation``, retrying transient failures with jittered backoff.
-
-    ``max_attempts`` counts the *total* number of calls, so 3 means one initial
-    attempt plus two retries.
-    """
+    """Call operation, retrying transient failures with jittered backoff."""
     attempts = (max_attempts if max_attempts is not None else settings.http_max_retries + 1)
     attempts = max(1, attempts)
     last_error: Exception | None = None
@@ -83,8 +55,6 @@ async def retry_async(
             last_error = exc
             if attempt == attempts:
                 break
-            # Full jitter: sleep for a uniformly random slice of the current
-            # backoff window rather than the whole window.
             window = min(max_delay, base_delay * (2 ** (attempt - 1)))
             delay = random.uniform(0, window)
             log.warning(
@@ -97,45 +67,24 @@ async def retry_async(
             )
             await asyncio.sleep(delay)
         except PermanentError:
-            raise  # deterministic - a retry cannot change the outcome
+            raise
 
     log.error("retries_exhausted", provider=name, attempts=attempts, error=str(last_error))
     raise TransientError(f"{name}: {attempts} attempt(s) failed: {last_error}") from last_error
 
 
-# --------------------------------------------------------------------------- #
 # Circuit breaker
-# --------------------------------------------------------------------------- #
 
 
 class CircuitState(StrEnum):
     CLOSED = "closed"        # normal: calls pass through
     OPEN = "open"            # failing: calls rejected immediately
-    HALF_OPEN = "half_open"  # probing: a single trial call is allowed through
+    HALF_OPEN = "half_open"
 
 
 @dataclass
 class CircuitBreaker:
-    """Per-dependency breaker.
-
-    State machine::
-
-        CLOSED --(fail_threshold consecutive failures)--> OPEN
-        OPEN   --(reset_timeout elapsed)---------------> HALF_OPEN
-        HALF_OPEN --(trial succeeds)-------------------> CLOSED
-        HALF_OPEN --(trial fails)----------------------> OPEN  (timer restarts)
-
-    HALF_OPEN admits exactly one trial call. Letting the full load through the
-    instant the timer expires would re-flatten a service that is still fragile.
-
-    Consecutive failures (not a rolling error rate) is the simplest rule that
-    behaves correctly here, and the counter resets on any success so an isolated
-    blip never accumulates toward tripping.
-
-    State is per process. With several workers each keeps its own view, which is
-    acceptable: each one independently stops calling a dead dependency. Sharing
-    it through Redis would be the next step if coordinated tripping mattered.
-    """
+    """Per-dependency breaker."""
 
     name: str
     fail_threshold: int = field(default_factory=lambda: settings.circuit_fail_threshold)
@@ -148,7 +97,6 @@ class CircuitBreaker:
 
     @property
     def state(self) -> CircuitState:
-        # Lazily transition OPEN -> HALF_OPEN on read; no background timer needed.
         if self._state is CircuitState.OPEN and (
             time.monotonic() - self._opened_at >= self.reset_timeout
         ):
@@ -197,7 +145,7 @@ class CircuitBreaker:
         )
 
     def reset(self) -> None:
-        """Test hook - breakers are process-global and must not leak across tests."""
+        """Test hook, breakers are process-global and must not leak across tests."""
         self._state = CircuitState.CLOSED
         self._failures = 0
         self._opened_at = 0.0
@@ -211,10 +159,6 @@ class CircuitBreaker:
         try:
             result = await operation()
         except (PermanentError, CircuitOpenError):
-            # A 4xx says our request was wrong, not that the dependency is down.
-            # Counting it toward the breaker would trip on our own bad input.
-            # The probe slot must still be released, or a half-open breaker that
-            # happens to get one bad request would never admit another trial.
             self._half_open_in_flight = False
             raise
         except Exception:
@@ -250,18 +194,11 @@ def reset_all_breakers() -> None:
         breaker.reset()
 
 
-# --------------------------------------------------------------------------- #
 # Rate limiter
-# --------------------------------------------------------------------------- #
 
 
 class RateLimiter:
-    """Async token bucket, used to honour a provider's published quota.
-
-    This *delays* rather than rejects: the caller is asking politely to stay
-    within a limit, not being punished for exceeding one. The lock serialises
-    token accounting so concurrent callers cannot both spend the last token.
-    """
+    """Async token bucket, used to honour a provider's published quota."""
 
     def __init__(self, rate_per_sec: float, burst: int = 1) -> None:
         self._rate = max(rate_per_sec, 0.001)

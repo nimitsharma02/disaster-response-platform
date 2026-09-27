@@ -1,13 +1,4 @@
-"""Domain enumerations.
-
-These are real Postgres ENUM types, not free-text columns with a CHECK. The
-database rejects an invalid status even if it is written by a script that
-bypasses the application, and the type is self-documenting in ``\\dT``.
-
-The cost is that adding a value needs a migration (``ALTER TYPE ... ADD VALUE``).
-That is acceptable here precisely because these sets are meant to be closed - if
-they were open-ended, a lookup table would be the right call instead.
-"""
+"""Domain enumerations."""
 
 from __future__ import annotations
 

@@ -1,16 +1,4 @@
-"""Health and readiness endpoints.
-
-Two probes, because they answer different questions:
-
-* ``/health`` (**liveness**) - is this process running? Touches nothing external.
-  If it fails, restart the container.
-* ``/health/ready`` (**readiness**) - can this instance serve traffic? Checks the
-  database and cache. If it fails, stop routing to this instance but do **not**
-  restart it: a database blip is not fixed by killing the app.
-
-Conflating them is a classic operational mistake - a brief database outage then
-triggers a restart loop across every instance at once.
-"""
+"""Health and readiness endpoints."""
 
 from __future__ import annotations
 
@@ -44,15 +32,7 @@ async def health() -> HealthStatus:
     summary="Readiness probe: dependency checks",
 )
 async def readiness(response: Response) -> ReadinessStatus:
-    """Check every dependency and report per-component status.
-
-    Returns 503 when a hard dependency is down, so an orchestrator or load
-    balancer can act on the status code alone without parsing the body.
-
-    The cache is a **soft** dependency: with ``CACHE_ALLOW_MEMORY_FALLBACK`` the
-    app still serves correctly without Redis, just without a shared cache or
-    cross-worker events. It is reported as degraded, not failed.
-    """
+    """Check every dependency and report per-component status."""
     checks: dict[str, Any] = {}
 
     database_ok = await check_database()
@@ -75,8 +55,6 @@ async def readiness(response: Response) -> ReadinessStatus:
         ),
     }
 
-    # Breaker state is genuinely useful here: it shows at a glance which
-    # external provider is currently being skipped and why.
     checks["external_providers"] = {
         name: breaker.snapshot() for name, breaker in all_breakers().items()
     } or {"note": "no external calls made yet this process"}

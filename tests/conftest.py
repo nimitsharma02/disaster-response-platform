@@ -1,22 +1,4 @@
-"""Test fixtures.
-
-Two isolation problems have to be solved for these tests to be trustworthy:
-
-**Database.** The suite runs against a real PostGIS database (``disaster_response_test``),
-because the whole point of several tests is that ``ST_DWithin`` behaves correctly
-- mocking the database would test the mock. Migrations run once per session, and
-each test runs inside a transaction that is rolled back afterwards, so tests
-cannot see one another's writes and order never matters.
-
-**Process-global state.** Caches, circuit breakers and the cache backend are
-module-level singletons, which is right for a server and dangerous for a test
-suite. ``reset_global_state`` clears all of them between tests; without it, a
-test that trips a breaker would fail the next test that expects a working
-provider.
-
-External HTTP is never called for real: ``httpx.MockTransport`` intercepts it,
-so the suite is fast, offline and deterministic.
-"""
+"""Test fixtures."""
 
 from __future__ import annotations
 
@@ -26,18 +8,11 @@ from collections.abc import AsyncGenerator, Callable
 import pytest
 import pytest_asyncio
 
-# Must be set before app.core.config is imported, since settings are read once.
-#
-# Assignment, NOT setdefault. Under docker compose the container already has
-# APP_ENV=development from `.env`, so setdefault would silently do nothing and
-# the suite would run against the DEVELOPMENT database - destroying real data and
-# producing confusing connection-pool errors. A test harness must pin its own
-# environment rather than defer to whatever happens to be set.
 os.environ["APP_ENV"] = "test"                # selects TEST_DATABASE_URL
-os.environ["RATE_LIMIT_ENABLED"] = "false"    # a shared limiter would fail tests at random
-os.environ["GEOCODER_ENABLED"] = "false"      # offline gazetteer only: no network in tests
-os.environ["ANTHROPIC_API_KEY"] = ""          # never call an LLM from the suite
-os.environ["CACHE_L1_TTL"] = "0"              # disable L1 so cache assertions observe L2
+os.environ["RATE_LIMIT_ENABLED"] = "false"
+os.environ["GEOCODER_ENABLED"] = "false"
+os.environ["ANTHROPIC_API_KEY"] = ""
+os.environ["CACHE_L1_TTL"] = "0"
 
 import httpx  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
@@ -56,22 +31,10 @@ from app.integrations.resilience import reset_all_breakers  # noqa: E402
 from app.main import create_app  # noqa: E402
 from app.repositories import resource_repo  # noqa: E402
 
-# Note: there is deliberately no custom `event_loop` fixture here - pytest-asyncio
-# removed that override point in 1.0. Loop scoping is configured instead through
-# `asyncio_default_fixture_loop_scope = "function"` in pyproject.toml, so every
-# per-test fixture shares the test's own loop, plus an explicit `loop_scope` on
-# the one session-scoped fixture below.
-
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session", autouse=True)
 async def _create_schema() -> AsyncGenerator[None, None]:
-    """Build the schema once for the whole session.
-
-    ``create_all`` from model metadata rather than ``alembic upgrade head``: it
-    is faster and this fixture's job is to test application behaviour. The
-    migration itself is exercised by actually running it against the dev
-    database (``docker compose exec api alembic upgrade head``).
-    """
+    """Build the schema once for the whole session."""
     from sqlalchemy import text
 
     engine = get_engine()
@@ -82,10 +45,6 @@ async def _create_schema() -> AsyncGenerator[None, None]:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
 
-    # Dispose and clear the module-level engine before handing over to the tests.
-    # An asyncpg pool is bound to the event loop that created it, and this
-    # fixture's loop is not necessarily the one a given test runs in. Leaving the
-    # engine in place produces "got Future attached to a different loop".
     await dispose_engine()
 
     yield
@@ -99,11 +58,7 @@ async def _create_schema() -> AsyncGenerator[None, None]:
 
 @pytest.fixture(autouse=True)
 def reset_global_state():
-    """Clear process-global state around every test.
-
-    Without this the suite is order-dependent: a tripped circuit breaker or a
-    warm cache entry from one test silently changes the behaviour of the next.
-    """
+    """Clear process-global state around every test."""
     set_backend(MemoryBackend())
     cache.clear_l1()
     reset_all_breakers()
@@ -116,24 +71,7 @@ def reset_global_state():
 
 @pytest.fixture
 async def session() -> AsyncGenerator[AsyncSession, None]:
-    """A session bound to a transaction that is always rolled back.
-
-    The session joins an outer transaction on a single connection, so anything
-    the code under test commits is committed only to that transaction - and the
-    rollback at the end discards it. This is what makes tests independent
-    without truncating tables between them.
-
-    ``join_transaction_mode="create_savepoint"`` is the part that makes this
-    work. The service layer really does call ``session.commit()``; without this
-    the session would try to start its own transaction on a connection that
-    already has one ("cannot use Connection.transaction() in a manually started
-    transaction"). With it, each commit releases a SAVEPOINT instead, so the
-    application code is genuinely exercised while the outer transaction stays
-    open and can still be rolled back.
-
-    The engine is created and disposed inside this fixture so that its asyncpg
-    pool always belongs to the event loop the test is running on.
-    """
+    """A session bound to a transaction that is always rolled back."""
     await dispose_engine()
     engine = get_engine()
     connection = await engine.connect()
@@ -158,15 +96,7 @@ async def session() -> AsyncGenerator[AsyncSession, None]:
 
 @pytest.fixture
 async def client(session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
-    """HTTP client wired to the app, sharing the test's transaction.
-
-    ``get_session`` is overridden so the request handlers use the same
-    transaction-bound session as the test, which is what lets a test set up data
-    directly and then see it through the API.
-
-    ASGITransport calls the app in-process: no socket, no port, no server to
-    start, and tracebacks surface directly in the test.
-    """
+    """HTTP client wired to the app, sharing the test's transaction."""
     app = create_app()
 
     async def _override() -> AsyncGenerator[AsyncSession, None]:
@@ -184,9 +114,7 @@ async def client(session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     app.dependency_overrides.clear()
 
 
-# --------------------------------------------------------------------------- #
 # Users and authentication
-# --------------------------------------------------------------------------- #
 
 _PASSWORD = "test-password-123"
 
@@ -224,11 +152,7 @@ async def responder_user(session: AsyncSession) -> User:
 
 
 def auth_header(user: User) -> dict[str, str]:
-    """Mint a valid token for ``user``.
-
-    The token is produced by the real ``create_access_token``, so the tests
-    exercise genuine signing and verification rather than a bypass.
-    """
+    """Mint a valid token for user."""
     from app.core.security import create_access_token
 
     token, _ = create_access_token(
@@ -257,27 +181,15 @@ def responder_headers(responder_user: User) -> dict[str, str]:
     return auth_header(responder_user)
 
 
-# --------------------------------------------------------------------------- #
 # Geospatial fixture data
-# --------------------------------------------------------------------------- #
 
-# Reference point: Lower Manhattan. Every seeded resource below has a known
-# approximate distance from it, so radius assertions are exact rather than
 # "whatever the data happened to be".
 NYC_LAT, NYC_LNG = 40.7128, -74.0060
 
 
 @pytest.fixture
 async def geo_resources(session: AsyncSession) -> dict[str, object]:
-    """Resources at known distances from the NYC reference point.
-
-    Approximate distances:
-        very_close  ~0.1 km
-        close       ~1.2 km
-        mid         ~4.5 km
-        far         ~8.5 km
-        very_far    ~5,500 km  (London - always outside any sane radius)
-    """
+    """Resources at known distances from the NYC reference point."""
     made = {}
     points = [
         ("very_close", ResourceType.WATER, 40.7130, -74.0058),
@@ -298,19 +210,12 @@ async def geo_resources(session: AsyncSession) -> dict[str, object]:
     return made
 
 
-# --------------------------------------------------------------------------- #
 # External HTTP mocking
-# --------------------------------------------------------------------------- #
 
 
 @pytest.fixture
 def mock_transport() -> Callable[..., httpx.MockTransport]:
-    """Build a MockTransport for the external providers.
-
-    Returns a factory so each test chooses its own scenario (success, failure,
-    slow) and can count how many times the origin was actually called - which is
-    how the cache tests prove a hit avoided the network.
-    """
+    """Build a MockTransport for the external providers."""
 
     def _build(
         *,

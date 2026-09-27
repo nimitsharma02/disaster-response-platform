@@ -1,25 +1,4 @@
-"""Mock external providers: a social-media feed and an official bulletin feed.
-
-This runs as its **own process on its own port**, not as an in-process stub. That
-matters: it means the main application's timeouts, retries, circuit breaker and
-cache are exercised against a real socket that can really be slow, really return
-500, and really be stopped mid-demo (``docker compose stop mock-services``). An
-in-process fake would prove none of that.
-
-Two deliberately *different* payload shapes are served, so the normalisation
-layer in the main app has something real to do:
-
-    social   -> {"content", "user", "created_at", "post_id", "likes"}
-    official -> {"headline", "body", "issued_at", "agency", "severity", "ref"}
-
-Responses are deterministic for a given query (seeded by a hash of it), so cache
-hit/miss behaviour is observable rather than masked by random content.
-
-Chaos knobs, for demonstrating failure handling:
-
-    POST /_control/chaos?failure_rate=0.8&latency_ms=3000
-    POST /_control/chaos?failure_rate=0.0
-"""
+"""Mock external providers: a social-media feed and an official."""
 
 from __future__ import annotations
 
@@ -47,21 +26,16 @@ class Chaos:
         self.latency_ms = int(os.getenv("MOCK_LATENCY_MS", "120"))
 
     async def apply(self, endpoint: str) -> None:
-        # Simulated network latency, so the caller's timeout budget is real.
         if self.latency_ms > 0:
             await asyncio.sleep(self.latency_ms / 1000)
         if self.failure_rate > 0 and random.random() < self.failure_rate:
-            # 503 rather than 500: it is the honest code for "overloaded", and it
-            # is what the client's retry-then-trip-breaker path should react to.
             raise HTTPException(status_code=503, detail=f"{endpoint} is temporarily overloaded")
 
 
 chaos = Chaos()
 
 
-# --------------------------------------------------------------------------- #
 # Content templates
-# --------------------------------------------------------------------------- #
 
 _SOCIAL_TEMPLATES = [
     ("Need drinking water near {place}, we have been without supply since morning", "high"),
@@ -123,21 +97,14 @@ def _place_from_query(query: str) -> str:
     cleaned = query.replace("disaster", "").replace("emergency", "").strip(" ,-")
     if not cleaned:
         return "the affected area"
-    # Only title-case input that is entirely lowercase. Applying .title() to an
-    # already-cased name mangles it - "Manhattan, New York, USA" would come back
-    # as "Manhattan, New York, Usa".
     return cleaned.title() if cleaned.islower() else cleaned
 
 
-# --------------------------------------------------------------------------- #
 # Endpoints
-# --------------------------------------------------------------------------- #
 
 
 @app.get("/health", summary="Liveness probe")
 async def health() -> dict[str, Any]:
-    # Intentionally not subject to chaos: a health check that lies is worse than
-    # no health check.
     return {
         "status": "ok",
         "service": "mock-external-services",
@@ -177,7 +144,6 @@ async def social_search(
             }
         )
 
-    # A response the client can use to be a good citizen, mirroring real APIs.
     response.headers["X-RateLimit-Remaining"] = str(rng.randint(40, 100))
     return {"query": q, "result_count": len(posts), "posts": posts}
 
@@ -187,7 +153,7 @@ async def official_bulletins(
     region: str = Query(min_length=1),
     limit: int = Query(default=5, ge=1, le=20),
 ) -> dict[str, Any]:
-    """Raw official payload - a completely different shape from the social one."""
+    """Raw official payload, a completely different shape from the social one."""
     await chaos.apply("official bulletins")
 
     rng = _seeded(f"official:{region}")

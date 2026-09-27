@@ -1,20 +1,4 @@
-"""Shared outbound HTTP client.
-
-One ``httpx.AsyncClient`` for the whole process, created at startup and closed at
-shutdown. Creating a client per call would throw away the connection pool and pay
-a fresh TCP + TLS handshake every time - on a hot path that dominates the actual
-request latency.
-
-This module's other job is to translate transport-level reality into the two
-categories ``resilience.py`` reasons about:
-
-    timeout / connection error / 5xx / 429  ->  TransientError  (retry, trip breaker)
-    4xx (except 429)                        ->  PermanentError  (never retry)
-
-Timeouts are **always** explicit. httpx defaults to 5s but a client with no
-timeout at all is the single most common way an async service dies: one hung
-upstream socket holds a connection, then a worker, then all of them.
-"""
+"""Shared outbound HTTP client."""
 
 from __future__ import annotations
 
@@ -32,12 +16,7 @@ _client: httpx.AsyncClient | None = None
 
 
 def build_timeout() -> httpx.Timeout:
-    """Separate connect and read budgets.
-
-    They fail for different reasons: connect failing means the host is
-    unreachable (fail fast), read failing means it accepted us but is slow
-    (allow longer). Collapsing them into one number loses that distinction.
-    """
+    """Separate connect and read budgets."""
     return httpx.Timeout(
         connect=settings.http_connect_timeout_s,
         read=settings.http_read_timeout_s,
@@ -90,12 +69,7 @@ async def request_json(
     headers: dict[str, str] | None = None,
     timeout: httpx.Timeout | float | None = None,
 ) -> Any:
-    """Perform one HTTP call and return parsed JSON, or raise Transient/Permanent.
-
-    No retry and no breaker here on purpose - this is a single attempt. Layering
-    is the caller's decision, because whether a call is safe to retry depends on
-    whether it is idempotent, and only the caller knows that.
-    """
+    """Perform one HTTP call and return parsed JSON, or raise."""
     client = get_http_client()
     try:
         response = await client.request(
@@ -109,7 +83,6 @@ async def request_json(
     except httpx.TimeoutException as exc:
         raise TransientError(f"{provider}: request timed out ({exc.__class__.__name__})") from exc
     except httpx.TransportError as exc:
-        # DNS failure, connection refused, TLS error, connection reset.
         raise TransientError(f"{provider}: transport error: {exc}") from exc
 
     status = response.status_code
@@ -117,8 +90,6 @@ async def request_json(
     if status >= 500:
         raise TransientError(f"{provider}: upstream returned {status}")
     if status == 429:
-        # We are being throttled. Transient by definition - backing off is
-        # exactly the correct response.
         raise TransientError(f"{provider}: rate limited (429)")
     if status >= 400:
         raise PermanentError(f"{provider}: client error {status}: {response.text[:200]}")
@@ -126,6 +97,4 @@ async def request_json(
     try:
         return response.json()
     except ValueError as exc:
-        # A 200 carrying HTML (a captive portal, an error page) is a broken
-        # upstream, not a broken request - so transient, and worth one retry.
         raise TransientError(f"{provider}: response was not valid JSON") from exc

@@ -1,18 +1,4 @@
-"""Client for the mock social-media provider.
-
-Its single responsibility is the **anti-corruption layer**: the provider's field
-names (``post_id``, ``user``, ``content``) stop here and never reach the rest of
-the codebase. Everything downstream sees :class:`app.schemas.report.Report`.
-
-That boundary is what makes the provider swappable. Pointing this at a real
-social API would mean rewriting ``_normalise`` and nothing else - no service, no
-route, no response model changes.
-
-Normalisation is also defensive. External data is untrusted input: a missing
-field, a null where a string was promised, or an unparseable timestamp must
-degrade that one item, not fail the whole request. A single malformed post
-should never cost a responder the other eleven.
-"""
+"""Client for the mock social-media provider."""
 
 from __future__ import annotations
 
@@ -40,12 +26,7 @@ SOURCE = "social"
 
 
 async def fetch_reports(query: str, *, limit: int = 12) -> list[Report]:
-    """Fetch and normalise social reports for ``query``.
-
-    Raises :class:`TransientError`, :class:`PermanentError` or
-    :class:`CircuitOpenError` on failure. Deliberately does **not** swallow them:
-    the caller owns the cache and therefore owns the fallback decision.
-    """
+    """Fetch and normalise social reports for query."""
     breaker = get_breaker(PROVIDER)
 
     async def _call() -> list[Report]:
@@ -87,8 +68,6 @@ def _normalise(payload: Any) -> list[Report]:
             continue
         content = (raw.get("content") or "").strip()
         if not content:
-            # A report with no text carries no information; drop it rather than
-            # surfacing an empty card to an operator.
             skipped += 1
             continue
         try:
@@ -101,12 +80,10 @@ def _normalise(payload: Any) -> list[Report]:
                     content=content,
                     created_at=_parse_timestamp(raw.get("created_at")),
                     verified=bool(raw.get("verified_account", False)),
-                    # Priority is assigned later by the classifier; the provider
-                    # has no say in our triage.
                     priority=ReportPriority.LOW,
                 )
             )
-        except Exception as exc:  # noqa: BLE001 - one bad item must not fail the batch
+        except Exception as exc:
             skipped += 1
             log.debug("social_item_skipped", provider=PROVIDER, error=str(exc))
 
@@ -116,12 +93,7 @@ def _normalise(payload: Any) -> list[Report]:
 
 
 def _parse_timestamp(value: Any) -> datetime:
-    """Parse a timestamp leniently, defaulting to now.
-
-    An unreadable timestamp is not worth discarding a report over, but a naive
-    datetime is: mixing naive and aware datetimes raises on comparison, so
-    anything without a timezone is assumed UTC.
-    """
+    """Parse a timestamp leniently, defaulting to now."""
     if isinstance(value, str) and value:
         try:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))

@@ -1,10 +1,4 @@
-"""Disaster request/response schemas.
-
-Separate models for create, update and read. It is tempting to reuse one, but
-they genuinely differ: ``created_by`` is server-assigned and must never be
-accepted from a client (that would be a trivial impersonation hole), and PATCH
-needs every field optional while POST does not.
-"""
+"""Disaster request/response schemas."""
 
 from __future__ import annotations
 
@@ -17,8 +11,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from app.db.models.enums import DisasterStatus
 from app.schemas.common import GeoPoint, Latitude, Longitude, ORMModel
 
-# Tags are normalised to lowercase slugs so "Flood", "flood" and " FLOOD " are
-# one tag. Without this, filtering by tag silently misses rows.
 Tag = Annotated[str, Field(min_length=1, max_length=40, pattern=r"^[a-z0-9][a-z0-9_-]*$")]
 
 
@@ -38,7 +30,7 @@ def _normalise_tags(tags: list[str] | None) -> list[str]:
 
 class DisasterCreate(BaseModel):
     model_config = ConfigDict(
-        extra="forbid",  # reject unknown fields rather than ignoring a typo'd one
+        extra="forbid",
         json_schema_extra={
             "example": {
                 "title": "Manhattan Flash Flooding",
@@ -55,8 +47,6 @@ class DisasterCreate(BaseModel):
     tags: list[Tag] = Field(default_factory=list, max_length=20)
     status: DisasterStatus = DisasterStatus.REPORTED
 
-    # Optional manual override. When omitted, the service resolves the location
-    # from the description (see services/geocoding_service.py).
     latitude: Latitude | None = None
     longitude: Longitude | None = None
     location_name: str | None = Field(default=None, max_length=300)
@@ -76,19 +66,13 @@ class DisasterCreate(BaseModel):
 
     @model_validator(mode="after")
     def _coords_are_a_pair(self) -> DisasterCreate:
-        # A lone latitude is meaningless and almost certainly a client bug.
         if (self.latitude is None) != (self.longitude is None):
             raise ValueError("latitude and longitude must be provided together")
         return self
 
 
 class DisasterUpdate(BaseModel):
-    """PATCH body. Every field optional; absent means "leave unchanged".
-
-    ``exclude_unset`` at the call site is what distinguishes "not provided" from
-    "explicitly set to null" - which is why partial update needs its own model
-    rather than a create model with defaults.
-    """
+    """PATCH body."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -99,7 +83,6 @@ class DisasterUpdate(BaseModel):
     latitude: Latitude | None = None
     longitude: Longitude | None = None
     location_name: str | None = Field(default=None, max_length=300)
-    # Opt-in: re-run location resolution against the (possibly new) description.
     reresolve_location: bool = False
 
     @field_validator("tags", mode="before")
@@ -123,12 +106,7 @@ class DisasterCreator(ORMModel):
 
 
 class LocationInfo(BaseModel):
-    """Resolved location plus its provenance.
-
-    ``source`` and ``confidence`` travel with the coordinates so a consumer can
-    decide how much to trust them. An inferred point and a human-entered point
-    are not interchangeable when you are dispatching a rescue team.
-    """
+    """Resolved location plus its provenance."""
 
     name: str | None = None
     point: GeoPoint | None = None
@@ -160,12 +138,7 @@ class DisasterResponse(ORMModel):
 
 
 class DisasterListFilters(BaseModel):
-    """Query filters for ``GET /disasters``.
-
-    Grouped into a model rather than a long signature of Query() params so the
-    validation rules (for example: radius requires coordinates) live in one
-    place and are testable without spinning up the app.
-    """
+    """Query filters for GET /disasters."""
 
     tag: str | None = Field(default=None, description="Exact tag match, e.g. ?tag=flood")
     status: DisasterStatus | None = None

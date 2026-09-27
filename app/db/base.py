@@ -1,10 +1,4 @@
-"""Declarative base and shared column mixins.
-
-The naming convention matters more than it looks. Without it Postgres invents
-constraint names, Alembic autogenerate produces churn on every run, and you
-cannot write a migration that drops a constraint by name. Setting it once here
-makes the schema deterministic.
-"""
+"""Declarative base and shared column mixins."""
 
 from __future__ import annotations
 
@@ -29,16 +23,7 @@ class Base(DeclarativeBase):
 
 
 class UUIDPrimaryKeyMixin:
-    """UUIDv4 primary keys rather than bigserial.
-
-    Chosen because ids appear in URLs and are emitted over WebSocket: a sequential
-    integer leaks how many incidents exist and invites enumeration. The cost is a
-    wider index and no natural insertion ordering, which is why ``created_at`` is
-    indexed separately for sorting.
-
-    ``gen_random_uuid()`` is a server default (pgcrypto, built into Postgres 13+),
-    so rows inserted by SQL or by a seed script get ids without the application.
-    """
+    """UUIDv4 primary keys rather than bigserial."""
 
     id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True),
@@ -48,14 +33,7 @@ class UUIDPrimaryKeyMixin:
 
 
 class TimestampMixin:
-    """Server-generated timestamps.
-
-    ``server_default``/``onupdate`` at the database level, not in Python: the
-    clock that matters is the database's, and rows touched by a migration or a
-    manual UPDATE stay correct. Always timezone-aware (``timestamptz``) - storing
-    naive local times in a system that coordinates across regions is a real bug,
-    not a style preference.
-    """
+    """Server-generated timestamps."""
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

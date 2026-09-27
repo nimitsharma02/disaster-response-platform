@@ -1,17 +1,4 @@
-"""Generate docs/postman_collection.json.
-
-Built by a script rather than hand-maintained, so the collection cannot drift
-away from the API. Run after changing endpoints:
-
-    docker compose exec api python -m scripts.build_postman
-
-The collection carries:
-  * a `{{baseUrl}}` variable and `{{token}}` / `{{disasterId}}` placeholders
-  * a test script on Login that captures the token automatically, so every other
-    request is authorised without copy-pasting
-  * a test script on Create that captures the new disaster id
-  * requests grouped by the section of the brief they demonstrate
-"""
+"""Generate docs/postman_collection."""
 
 from __future__ import annotations
 
@@ -74,9 +61,9 @@ COLLECTION: dict[str, Any] = {
     "info": {
         "name": "Disaster Response Coordination Platform",
         "description": (
-            "Run the requests in order. **1. Authentication → Login as admin** stores the "
+            "Run the requests in order. **1. Authentication -> Login as admin** stores the "
             "JWT in a collection variable, so every later request is authorised "
-            "automatically. **2. Disasters → Create** stores the new id as `disasterId`.\n\n"
+            "automatically. **2. Disasters -> Create** stores the new id as `disasterId`.\n\n"
             "Set `baseUrl` to `http://localhost:8000/api/v1` (the default)."
         ),
         "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
@@ -87,7 +74,6 @@ COLLECTION: dict[str, Any] = {
         {"key": "disasterId", "value": ""},
     ],
     "item": [
-        # ------------------------------------------------------------------ #
         {
             "name": "1. Authentication",
             "description": "Mock users seeded by scripts/seed.py.",
@@ -139,7 +125,6 @@ pm.test("problem+json", () =>
                 request("Who am I", "GET", "/auth/me", auth=True),
             ],
         },
-        # ------------------------------------------------------------------ #
         {
             "name": "2. Disasters (CRUD)",
             "item": [
@@ -246,7 +231,6 @@ pm.test("204 No Content", () => pm.response.to.have.status(204));
                 ),
             ],
         },
-        # ------------------------------------------------------------------ #
         {
             "name": "3. Geospatial — nearby resources",
             "description": "PostGIS ST_DWithin against a GiST-indexed geography column.",
@@ -309,7 +293,6 @@ pm.test("422", () => pm.response.to.have.status(422));
                 ),
             ],
         },
-        # ------------------------------------------------------------------ #
         {
             "name": "4. Reports — external integration + caching",
             "description": (
@@ -351,7 +334,6 @@ pm.test("cache reports HIT", () =>
                 ),
             ],
         },
-        # ------------------------------------------------------------------ #
         {
             "name": "5. Error handling",
             "description": "Every error is an RFC 9457 problem document.",
@@ -414,7 +396,6 @@ pm.test("403", () => pm.response.to.have.status(403));
                 ),
             ],
         },
-        # ------------------------------------------------------------------ #
         {
             "name": "6. Health",
             "item": [

@@ -1,14 +1,4 @@
-"""arq worker configuration.
-
-Run with::
-
-    arq app.workers.settings.WorkerSettings
-
-arq was chosen over Celery because it is async-native (our jobs are I/O-bound
-HTTP calls, so they share the same event-loop model as the API), it needs only
-Redis, and it is small enough to read end to end. Celery brings a much larger
-surface and a synchronous worker model we would have to bridge.
-"""
+"""arq worker configuration."""
 
 from __future__ import annotations
 
@@ -43,8 +33,6 @@ async def shutdown(ctx: dict) -> None:
 class WorkerSettings:
     functions = [refresh_reports]
     cron_jobs = [
-        # Every 5 minutes. Matches CACHE_TTL_REPORTS, so an entry is refreshed at
-        # roughly the moment it would otherwise go stale.
         cron(prewarm_active_disasters, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}),
     ]
 
@@ -52,11 +40,7 @@ class WorkerSettings:
     on_startup = startup
     on_shutdown = shutdown
 
-    # Jobs are all outbound HTTP, so concurrency is cheap - but keep it modest so
-    # a pre-warm burst cannot crowd out the API's own calls to the same provider.
     max_jobs = 5
     job_timeout = 60
     keep_result = 300
-    # Retry a couple of times; beyond that the provider is genuinely down and the
-    # circuit breaker is the right mechanism, not the queue.
     max_tries = 3

@@ -1,13 +1,4 @@
-"""Client for the mock official-bulletin provider (bonus feature).
-
-A second provider with a genuinely different payload shape, which is the point:
-it proves the normalisation boundary actually abstracts something. Both feeds
-converge on :class:`Report`, so the reports endpoint aggregates them without
-knowing or caring where an item came from - only ``source`` distinguishes them.
-
-Official bulletins are marked ``verified=True``. They come from a named agency,
-and an operator triaging a feed needs that distinction visible.
-"""
+"""Client for the mock official-bulletin provider (bonus feature)."""
 
 from __future__ import annotations
 
@@ -33,9 +24,6 @@ log = structlog.get_logger(__name__)
 PROVIDER = "mock-official-api"
 SOURCE = "official"
 
-# The provider's severity vocabulary mapped onto ours. Official severity is a
-# real signal and is trusted directly, unlike social content which must be
-# inferred by the classifier.
 _SEVERITY_TO_PRIORITY = {
     "severe": ReportPriority.CRITICAL,
     "high": ReportPriority.HIGH,
@@ -92,8 +80,6 @@ def _normalise(payload: Any) -> list[Report]:
                     source=SOURCE,
                     provider=PROVIDER,
                     author=str(raw.get("agency") or "Unknown agency"),
-                    # Headline and body are one field for us; the separation is a
-                    # presentation detail of that provider, not of our domain.
                     content=f"{headline}. {body}".strip(". ").strip(),
                     created_at=_parse_timestamp(raw.get("issued_at")),
                     verified=True,

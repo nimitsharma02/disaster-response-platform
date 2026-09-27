@@ -1,19 +1,4 @@
-"""Geospatial tests: radius filtering, distance accuracy and ordering.
-
-These run against real PostGIS. Mocking the database here would test the mock -
-the entire claim being verified is that ``ST_DWithin`` on a
-``geography(Point, 4326)`` column returns the right rows with the right
-distances.
-
-Fixture geometry (from ``conftest.geo_resources``), measured from the NYC
-reference point (40.7128, -74.0060):
-
-    very_close  ~0.03 km
-    close       ~1.13 km
-    mid         ~4.45 km
-    far         ~8.50 km
-    very_far    ~5570 km   (London)
-"""
+"""Geospatial tests: radius filtering, distance accuracy and ordering."""
 
 from __future__ import annotations
 
@@ -86,13 +71,7 @@ async def test_results_are_ordered_nearest_first(client, admin_headers, geo_reso
 
 
 async def test_distance_is_accurate_in_kilometres(client, admin_headers, geo_resources):
-    """Distances must be real metres on a spheroid, not degrees.
-
-    ``geo_close`` is 0.0102 degrees of latitude north of the reference point.
-    One degree of latitude is ~111.2 km, so the expected distance is ~1.13 km.
-    A geometry column would have returned 0.0102 here - the number that catches
-    a geography/geometry mix-up immediately.
-    """
+    """Distances must be real metres on a spheroid, not degrees."""
     disaster_id = await _create_disaster_at(client, admin_headers, NYC_LAT, NYC_LNG)
 
     response = await client.get(
@@ -122,7 +101,6 @@ async def test_explicit_centre_overrides_the_disaster_location(
     client, admin_headers, geo_resources
 ):
     """A responder searching around their own position, not the incident's."""
-    # Incident in London; search around New York.
     disaster_id = await _create_disaster_at(client, admin_headers, 51.5074, -0.1278, "London Event")
 
     response = await client.get(
@@ -168,12 +146,7 @@ async def test_disaster_without_location_returns_422_not_empty_list(client, admi
 
 
 async def test_antimeridian_is_handled_correctly(client, admin_headers, session):
-    """Two points either side of the 180th meridian are ~112 km apart, not ~19,000.
-
-    This is the case that breaks naive bounding-box or flat-earth distance
-    maths, and it is the clearest justification for using the geography type
-    rather than doing the arithmetic ourselves.
-    """
+    """Two points either side of the 180th meridian are ~112 km apart, not."""
     from app.repositories import resource_repo
 
     await resource_repo.create(

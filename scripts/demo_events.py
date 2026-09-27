@@ -1,10 +1,4 @@
-"""Minimal real-time client, for demonstrating the event stream from a terminal.
-
-    docker compose exec api python -m scripts.demo_events
-
-Then, in another terminal, create or update a disaster and watch events arrive.
-Uses SSE rather than WebSocket so it needs no extra client library.
-"""
+"""Minimal real-time client, for demonstrating the event stream from a."""
 
 from __future__ import annotations
 
@@ -23,7 +17,6 @@ async def main() -> None:
     print(f"Connecting to {STREAM} ...")
     print("Waiting for events. Create or update a disaster to see one. Ctrl-C to stop.\n")
 
-    # timeout=None on read: an SSE stream is meant to stay open indefinitely.
     async with (
         httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=None)) as client,
         client.stream("GET", STREAM) as response,

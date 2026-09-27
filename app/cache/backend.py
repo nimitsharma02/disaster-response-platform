@@ -1,22 +1,4 @@
-"""Cache/pubsub backends.
-
-One narrow interface, two implementations:
-
-* :class:`RedisBackend`  - the real thing. Shared across every worker process,
-  gives us native TTLs, atomic ``SET NX`` locks for single-flight, atomic
-  ``INCR`` for rate limiting, and pub/sub for real-time fan-out.
-* :class:`MemoryBackend` - a per-process stand-in used when Redis is unreachable
-  and ``CACHE_ALLOW_MEMORY_FALLBACK`` is on, and by the unit tests.
-
-The fallback exists so a missing Redis degrades the system (cache is no longer
-shared; events reach only clients on this worker) instead of preventing boot.
-That is the right trade for a coordination tool: serving slightly staler data
-beats serving nothing. In production you would set the flag to ``false`` and let
-the health check take the instance out of rotation instead.
-
-The interface is deliberately string-in/string-out. Serialization is the caller's
-concern (``app/cache/cache.py``), which keeps the backends swappable.
-"""
+"""Cache/pubsub backends."""
 
 from __future__ import annotations
 
@@ -50,18 +32,11 @@ class CacheBackend(Protocol):
     async def close(self) -> None: ...
 
 
-# --------------------------------------------------------------------------- #
 # In-process backend
-# --------------------------------------------------------------------------- #
 
 
 class MemoryBackend:
-    """Dict-backed cache with lazy expiry, plus asyncio-queue pub/sub.
-
-    Expiry is lazy (checked on read) rather than swept by a background task:
-    simpler, and for a cache the only cost is memory held slightly too long.
-    ``_sweep`` bounds that when the store grows.
-    """
+    """Dict-backed cache with lazy expiry, plus asyncio-queue pub/sub."""
 
     name = "memory"
     _MAX_KEYS = 10_000
@@ -95,8 +70,6 @@ class MemoryBackend:
             if len(self._store) >= self._MAX_KEYS:
                 self._sweep()
             if len(self._store) >= self._MAX_KEYS:
-                # Still full after sweeping: drop the oldest insertion. Crude, but
-                # this backend is a fallback, not the primary cache.
                 self._store.pop(next(iter(self._store)), None)
             expires_at = time.monotonic() + ttl if ttl else None
             self._store[key] = (value, expires_at)
@@ -135,7 +108,6 @@ class MemoryBackend:
 
     async def publish(self, channel: str, message: str) -> None:
         for queue in list(self._subscribers.get(channel, ())):
-            # Never block a publisher on a slow consumer: drop instead.
             if not queue.full():
                 queue.put_nowait(message)
 
@@ -160,17 +132,11 @@ class MemoryBackend:
         self._subscribers.clear()
 
 
-# --------------------------------------------------------------------------- #
 # Redis backend
-# --------------------------------------------------------------------------- #
 
 
 class RedisBackend:
-    """Async Redis client wrapper.
-
-    ``decode_responses=True`` so the rest of the codebase deals in ``str`` and
-    never has to think about bytes.
-    """
+    """Async Redis client wrapper."""
 
     name = "redis"
 
@@ -196,8 +162,6 @@ class RedisBackend:
         return int(await self._client.delete(*keys))
 
     async def delete_pattern(self, pattern: str) -> int:
-        # SCAN, never KEYS: KEYS blocks the single-threaded Redis event loop for
-        # the whole sweep, which is a production outage waiting to happen.
         removed = 0
         batch: list[str] = []
         async for key in self._client.scan_iter(match=pattern, count=500):
@@ -210,8 +174,6 @@ class RedisBackend:
         return removed
 
     async def incr(self, key: str, ttl: int) -> int:
-        # Pipelined so INCR and EXPIRE are one round-trip. EXPIRE is only set on
-        # the first hit, which makes this a fixed window rather than a sliding one.
         async with self._client.pipeline(transaction=True) as pipe:
             pipe.incr(key)
             pipe.ttl(key)
@@ -221,8 +183,6 @@ class RedisBackend:
         return int(count)
 
     async def acquire_lock(self, key: str, ttl: int) -> bool:
-        # SET NX EX is atomic: exactly one caller can win, which is what makes
-        # the single-flight guarantee in cache.py real rather than best-effort.
         return bool(await self._client.set(key, "1", nx=True, ex=ttl))
 
     async def release_lock(self, key: str) -> None:
@@ -252,9 +212,7 @@ class RedisBackend:
         await self._client.aclose()
 
 
-# --------------------------------------------------------------------------- #
 # Selection
-# --------------------------------------------------------------------------- #
 
 _backend: CacheBackend | None = None
 
@@ -292,8 +250,7 @@ async def init_backend() -> CacheBackend:
 
 
 def get_backend() -> CacheBackend:
-    """Synchronous accessor. Lazily creates a memory backend outside app lifespan
-    (unit tests, scripts) so nothing has to special-case startup ordering."""
+    """Synchronous accessor."""
     global _backend
     if _backend is None:
         _backend = MemoryBackend()

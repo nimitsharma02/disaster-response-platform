@@ -1,9 +1,4 @@
-"""Model package.
-
-Importing every model here is what makes ``Base.metadata`` complete. Alembic's
-autogenerate compares the database against that metadata, so a model that is
-never imported is a table Alembic will cheerfully offer to drop.
-"""
+"""Model package."""
 
 from app.db.base import Base
 from app.db.models.audit import AuditLog

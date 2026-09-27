@@ -1,10 +1,4 @@
-"""Shared schema building blocks.
-
-Everything crossing the HTTP boundary is a Pydantic model. That gives one
-definition that simultaneously validates input, serializes output, and generates
-the OpenAPI document - so the docs cannot drift from the implementation, because
-they are derived from it.
-"""
+"""Shared schema building blocks."""
 
 from __future__ import annotations
 
@@ -15,9 +9,6 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 T = TypeVar("T")
 
-# Latitude and longitude are validated at the type level, so an impossible
-# coordinate is rejected by the framework before any handler code runs and
-# never reaches PostGIS.
 Latitude = Annotated[float, Field(ge=-90, le=90, description="Degrees north, WGS 84 (EPSG:4326)")]
 Longitude = Annotated[float, Field(ge=-180, le=180, description="Degrees east, WGS 84 (EPSG:4326)")]
 
@@ -29,13 +20,7 @@ class ORMModel(BaseModel):
 
 
 class GeoPoint(BaseModel):
-    """A resolved coordinate pair.
-
-    Exposed as explicit ``latitude``/``longitude`` rather than a GeoJSON
-    ``[lng, lat]`` array. GeoJSON's longitude-first ordering is a notorious
-    source of transposed-coordinate bugs; named fields make the mistake
-    impossible for an API consumer to make silently.
-    """
+    """A resolved coordinate pair."""
 
     latitude: Latitude
     longitude: Longitude
@@ -61,28 +46,14 @@ class PageMeta(BaseModel):
 
 
 class Page(BaseModel, Generic[T]):
-    """Standard list envelope.
-
-    A bare JSON array is a dead end: there is nowhere to put a total, a cursor,
-    or a degraded-mode flag without a breaking change. Wrapping from day one
-    costs one level of nesting and buys unlimited room to grow.
-    """
+    """Standard list envelope."""
 
     items: list[T]
     meta: PageMeta
 
 
 class PaginationParams(BaseModel):
-    """Offset pagination.
-
-    Offset (not cursor) is a deliberate simplification: it supports arbitrary
-    sort orders and random page access, which is what a small operator-facing
-    dataset needs. It degrades on deep pages because the database must still
-    walk the skipped rows - noted as a trade-off in the README.
-
-    ``limit`` is capped at 100 so a single request cannot be used to pull the
-    whole table.
-    """
+    """Offset pagination."""
 
     limit: int = Field(default=20, ge=1, le=100)
     offset: int = Field(default=0, ge=0)
@@ -123,11 +94,7 @@ class HealthStatus(BaseModel):
 
 
 class ReadinessStatus(BaseModel):
-    """Readiness is about dependencies; liveness is about the process.
-
-    Kept separate so an orchestrator restarts a hung process but merely stops
-    routing traffic to an instance whose database is briefly unreachable.
-    """
+    """Readiness is about dependencies; liveness is about the process."""
 
     status: str
     checks: dict[str, Any]

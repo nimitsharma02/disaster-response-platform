@@ -33,18 +33,7 @@ async def find_nearby_for_disaster(
     disaster_id: uuid.UUID,
     params: NearbySearchParams,
 ) -> NearbySearchResponse:
-    """Resources near an incident.
-
-    The search centre is resolved in this order:
-
-    1. ``lat``/``lng`` from the query string, when supplied - a responder
-       searching around *their own* position.
-    2. Otherwise the disaster's own resolved location - the common case.
-
-    If neither exists the request is a 422, not an empty list. Returning ``[]``
-    would be a quiet lie: "no resources near here" and "we do not know where
-    here is" are different answers, and only one of them is actionable.
-    """
+    """Resources near an incident."""
     disaster = await disaster_service.get_disaster(session, disaster_id)
 
     if params.lat is not None and params.lng is not None:
@@ -119,8 +108,6 @@ async def create_resource(
     *,
     request_id: str | None = None,
 ) -> Resource:
-    # Validate the optional link before writing, so a bad disaster_id produces a
-    # clear 404 rather than a foreign-key violation surfacing as a 500.
     if payload.disaster_id is not None:
         await disaster_service.get_disaster(session, payload.disaster_id)
 
@@ -173,8 +160,6 @@ async def get_resource(session: AsyncSession, resource_id: uuid.UUID) -> Resourc
 def to_response(resource: Resource, *, distance_km: float | None = None) -> ResourceResponse:
     coords = point_to_lat_lng(resource.location)
     if coords is None:
-        # The column is NOT NULL, so this means a corrupt row rather than a
-        # missing one. Fail loudly instead of emitting a nonsense coordinate.
         raise ValidationError(f"Resource {resource.id} has an unreadable location")
 
     return ResourceResponse(

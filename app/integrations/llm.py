@@ -1,27 +1,4 @@
-"""Optional LLM place extraction (Anthropic Claude).
-
-Strictly opt-in. With no ``ANTHROPIC_API_KEY`` the application never touches the
-network here and falls back to the deterministic rules in ``gazetteer.py``. That
-keeps the "no API keys required" promise while still showing what the better path
-looks like when a key exists.
-
-Where an LLM genuinely beats the rules: informal or multilingual text, implicit
-references ("the Ferry Building is underwater" -> San Francisco), and messy
-punctuation. Where it does not: it is ~500ms instead of ~0ms, it costs money per
-call, and it can hallucinate a plausible-looking place. So the design is:
-
-* the LLM only ever extracts a **place name string** - it is never asked for
-  coordinates, because inventing a lat/lng is exactly what it would do well
-  enough to be dangerous;
-* the returned name is then resolved by a real geocoder;
-* every result is cached for 24h, keyed by description hash, so repeat calls are
-  free;
-* any failure falls straight through to the rules.
-
-The HTTP API is called directly rather than through the SDK to avoid adding a
-dependency for one request, and to keep the timeout/retry behaviour consistent
-with every other integration.
-"""
+"""Optional LLM place extraction (Anthropic Claude)."""
 
 from __future__ import annotations
 
@@ -62,11 +39,7 @@ def is_available() -> bool:
 
 
 async def extract_place(description: str) -> tuple[str | None, float]:
-    """Return ``(place_name, confidence)``.
-
-    Raises on failure so the caller can fall back. Returns ``(None, 0.0)`` when
-    the model ran successfully and found no location - a real answer, not a fault.
-    """
+    """Return (place_name, confidence)."""
     if not settings.llm_enabled:
         raise TransientError("LLM extraction disabled: no ANTHROPIC_API_KEY configured")
 
@@ -84,8 +57,6 @@ async def extract_place(description: str) -> tuple[str | None, float]:
             },
             json_body={
                 "model": settings.anthropic_model,
-                # Small ceiling: the reply is one short JSON object, and capping
-                # output caps both latency and cost.
                 "max_tokens": 200,
                 "system": _SYSTEM_PROMPT,
                 "messages": [
@@ -108,12 +79,7 @@ async def extract_place(description: str) -> tuple[str | None, float]:
 
 
 def _parse(payload: object) -> tuple[str | None, float]:
-    """Pull the JSON object out of the model's reply.
-
-    Models sometimes wrap JSON in prose or a markdown fence despite instructions,
-    so the text is scanned for the first JSON object rather than parsed blindly.
-    Treating that as a hard failure would make the integration needlessly brittle.
-    """
+    """Pull the JSON object out of the model's reply."""
     try:
         blocks = payload["content"]  # type: ignore[index]
         text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
@@ -138,7 +104,6 @@ def _parse(payload: object) -> tuple[str | None, float]:
         confidence = float(parsed.get("confidence", 0.7))
     except (TypeError, ValueError):
         confidence = 0.7
-    # Never trust a model's self-reported score outside its declared range.
     confidence = min(1.0, max(0.0, confidence))
 
     return place, (confidence if place else 0.0)

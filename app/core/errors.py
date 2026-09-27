@@ -1,24 +1,4 @@
-"""Error model and global exception handlers.
-
-Every failure leaves this application in exactly one shape: an RFC 9457
-"Problem Details" JSON object served as ``application/problem+json``.
-
-    {
-      "type":       "https://docs.drp.local/errors/not_found",
-      "title":      "Resource not found",
-      "status":     404,
-      "detail":     "Disaster 7c9e... does not exist",
-      "instance":   "/api/v1/disasters/7c9e...",
-      "code":       "not_found",
-      "request_id": "018f...",
-      "errors":     [ ... ]
-    }
-
-Why a single envelope: a client needs one parser, not one per endpoint, and
-``request_id`` ties any reported failure straight back to a log line. The generic
-handler deliberately never echoes the exception text, so an unexpected crash
-cannot leak a connection string or a stack frame to the caller.
-"""
+"""Error model and global exception handlers."""
 
 from __future__ import annotations
 
@@ -38,11 +18,7 @@ ERROR_DOC_BASE = "https://docs.drp.local/errors"
 
 
 class AppError(Exception):
-    """Base class for every error this application raises on purpose.
-
-    Anything inheriting from this is a *handled* condition with a known HTTP
-    status. Anything that does not inherit from it is a bug, and becomes a 500.
-    """
+    """Base class for every error this application raises on purpose."""
 
     status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR
     code: str = "internal_error"
@@ -100,7 +76,6 @@ class UnauthorizedError(AppError):
     title = "Authentication required or invalid"
 
     def __init__(self, detail: str | None = None, **kw: Any) -> None:
-        # RFC 6750: a 401 must tell the client how to authenticate.
         kw.setdefault("headers", {"WWW-Authenticate": "Bearer"})
         super().__init__(detail, **kw)
 
@@ -118,11 +93,7 @@ class RateLimitError(AppError):
 
 
 class UpstreamError(AppError):
-    """An external dependency failed and no fallback was available.
-
-    502 rather than 500: the fault is upstream, and that distinction matters to
-    whoever is reading the dashboard at 3am.
-    """
+    """An external dependency failed and no fallback was available."""
 
     status_code = status.HTTP_502_BAD_GATEWAY
     code = "upstream_unavailable"
@@ -135,9 +106,7 @@ class ServiceUnavailableError(AppError):
     title = "Service temporarily unavailable"
 
 
-# --------------------------------------------------------------------------- #
 # Handlers
-# --------------------------------------------------------------------------- #
 
 
 def _request_id(request: Request) -> str | None:
@@ -183,7 +152,6 @@ _TITLE_BY_STATUS = {
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def _app_error(request: Request, exc: AppError) -> JSONResponse:
-        # 4xx is the caller's problem and is noise at WARNING; 5xx is ours.
         logger = log.warning if exc.status_code < 500 else log.error
         logger(
             "request_failed",
@@ -196,8 +164,6 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def _validation(request: Request, exc: RequestValidationError) -> JSONResponse:
-        # Flatten Pydantic's nested loc tuples into "body.tags.0" style pointers,
-        # which is far easier for an API consumer to act on.
         errors = [
             {
                 "field": ".".join(str(p) for p in err.get("loc", ())),
@@ -213,11 +179,6 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(PydanticValidationError)
     async def _pydantic(request: Request, exc: PydanticValidationError) -> JSONResponse:
-        # A model validated outside the request-body path - for example a
-        # query-parameter model assembled inside a handler - raises Pydantic's
-        # own error rather than FastAPI's. Without this it would escape to the
-        # catch-all and surface as a 500, which would be both wrong and
-        # misleading: the caller's input is at fault, not the server.
         errors = [
             {
                 "field": ".".join(str(p) for p in err.get("loc", ())),
@@ -232,8 +193,6 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(StarletteHTTPException)
     async def _http(request: Request, exc: StarletteHTTPException) -> JSONResponse:
-        # Covers framework-raised errors we never construct ourselves (404 on an
-        # unrouted path, 405 on a wrong verb) so they share the same envelope.
         mapped = AppError(str(exc.detail))
         mapped.status_code = exc.status_code
         mapped.code = _CODE_BY_STATUS.get(exc.status_code, "http_error")
@@ -243,7 +202,6 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
-        # Log the real cause with a traceback, return a scrubbed body.
         log.exception("unhandled_exception", path=request.url.path, error=str(exc))
         return _respond(
             request,

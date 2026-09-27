@@ -1,10 +1,4 @@
-"""Disaster CRUD endpoints.
-
-Routes stay thin on purpose. Each one: declares its contract, enforces the role
-gate via a dependency, delegates to the service, and shapes the response. No
-business logic and no SQL - if a rule needs testing, it should be testable
-without an HTTP client.
-"""
+"""Disaster CRUD endpoints."""
 
 from __future__ import annotations
 
@@ -54,20 +48,7 @@ async def create_disaster(
     actor: RequireWriter,
     request_id: RequestId,
 ) -> DisasterResponse:
-    """Create an incident.
-
-    **Location resolution.** If ``latitude``/``longitude`` are omitted, the
-    service infers the location from ``description`` - extracting a place name
-    and geocoding it. Explicit coordinates always win, and the resolution method
-    is reported back in ``location.source`` with a ``location.confidence`` score.
-
-    Resolution never blocks the write: if nothing can be resolved, the incident
-    is still created with ``location.point = null``.
-
-    **Authorization:** ``admin`` or ``contributor``.
-
-    **Emits:** ``disaster_created`` on the real-time channel.
-    """
+    """Create an incident."""
     disaster = await disaster_service.create_disaster(
         session, payload, actor, request_id=request_id
     )
@@ -102,18 +83,7 @@ async def list_disasters(
         str, Query(description="created_at | -created_at | title | -title | distance")
     ] = "-created_at",
 ) -> Page[DisasterResponse]:
-    """List incidents.
-
-    Filters combine with AND. Supplying ``lat``/``lng``/``radius_km`` restricts
-    results to incidents whose resolved location falls inside the radius, using
-    the same PostGIS ``ST_DWithin`` path as the nearby-resources search, and adds
-    a ``distance_km`` to each item.
-
-    This endpoint is public (no token needed) so the map demo can render without
-    credentials. Every write endpoint is authenticated.
-    """
-    # Validated as a model so cross-field rules ("radius_km requires lat/lng")
-    # live in one place and raise a 422 in the standard error shape.
+    """List incidents."""
     filters = DisasterListFilters(
         tag=tag, status=status_filter, q=q, created_by=created_by,
         lat=lat, lng=lng, radius_km=radius_km, sort=sort,
@@ -147,25 +117,10 @@ async def update_disaster(
     actor: RequireWriter,
     request_id: RequestId,
 ) -> DisasterResponse:
-    """Update an incident. Only the fields present in the body are changed.
-
-    **Authorization:** ``admin`` may update any record; ``contributor`` may
-    update **only records they created** - a 403 otherwise. This is the
-    ownership rule the brief asks to be demonstrated, and it is enforced in the
-    service layer where the record is loaded.
-
-    **Location.** Changing ``description`` re-runs resolution unless explicit
-    coordinates are supplied in the same request. Pass
-    ``"reresolve_location": true`` to force it.
-
-    **Emits:** ``disaster_updated``, carrying the list of changed fields.
-    """
+    """Update an incident."""
     disaster = await disaster_service.update_disaster(
         session, disaster_id, payload, actor, request_id=request_id
     )
-    # The reports query is derived from location_name/title, so a change to
-    # either makes the cached feed wrong. Drop it rather than serve stale
-    # reports for the wrong place.
     if {"description", "location_name", "latitude", "title"} & payload.model_fields_set:
         await report_service.invalidate_reports_cache(disaster_id)
     return disaster_service.to_response(disaster)
@@ -183,17 +138,7 @@ async def delete_disaster(
     actor: RequireAdmin,
     request_id: RequestId,
 ) -> Response:
-    """Delete an incident.
-
-    **Authorization:** ``admin`` only - the second half of the demonstrated
-    authorization rule. A contributor receives 403 even for their own record,
-    because deletion destroys shared situational awareness in a way that editing
-    does not.
-
-    Returns 204 with no body, and records the deletion in the audit log.
-
-    **Emits:** ``disaster_deleted``.
-    """
+    """Delete an incident."""
     await disaster_service.delete_disaster(session, disaster_id, actor, request_id=request_id)
     await report_service.invalidate_reports_cache(disaster_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

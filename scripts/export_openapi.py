@@ -1,10 +1,4 @@
-"""Export the OpenAPI document to docs/openapi.json.
-
-The spec is generated FROM the code, never hand-maintained, so it cannot drift
-away from what the API actually does.
-
-    docker compose exec api python -m scripts.export_openapi
-"""
+"""Export the OpenAPI document to docs/openapi."""
 
 from __future__ import annotations
 

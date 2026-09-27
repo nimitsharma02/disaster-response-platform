@@ -1,9 +1,4 @@
-"""Validation and error-handling tests.
-
-Covers the brief's "one validation/error scenario", and additionally asserts the
-*shape* of every error - a consistent error contract is only real if it is
-tested, otherwise it drifts one endpoint at a time.
-"""
+"""Validation and error-handling tests."""
 
 from __future__ import annotations
 
@@ -31,7 +26,6 @@ async def test_missing_required_fields_returns_422_problem_document(client, cont
     assert body["type"].endswith("/validation_error")
     assert body["instance"] == "/api/v1/disasters"
     assert body["request_id"]
-    # Field-level detail, so a client can point at the offending input.
     assert any(e["field"].endswith("description") for e in body["errors"])
 
 
@@ -50,11 +44,7 @@ async def test_blank_title_is_rejected(client, contributor_headers):
 
 
 async def test_unknown_field_is_rejected_not_ignored(client, contributor_headers):
-    """``extra="forbid"``: a typo'd field should fail loudly, not vanish.
-
-    Silently ignoring ``statuss`` would leave the caller convinced they set
-    something they did not.
-    """
+    """extra="forbid": a typo'd field should fail loudly, not vanish."""
     response = await client.post(
         "/api/v1/disasters",
         headers=contributor_headers,
@@ -184,7 +174,6 @@ async def test_missing_token_returns_401_with_www_authenticate(client):
 
     assert response.status_code == 401
     assert response.json()["code"] == "unauthorized"
-    # RFC 6750: a 401 must tell the client how to authenticate.
     assert response.headers.get("www-authenticate") == "Bearer"
 
 
@@ -195,7 +184,6 @@ async def test_garbage_token_returns_401(client):
         json={"title": "Bad Token", "description": "An incident posted with a forged token."},
     )
     assert response.status_code == 401
-    # The message must not reveal *why* verification failed.
     assert response.json()["detail"] == "Invalid authentication token"
 
 

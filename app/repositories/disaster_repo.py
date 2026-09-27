@@ -1,10 +1,4 @@
-"""Disaster data access.
-
-The repository layer owns SQL and nothing else. It does not know what HTTP is,
-does not enforce permissions, and does not emit events - that is the service
-layer's job. Keeping it that narrow is what lets the business rules be tested
-without a web server and the queries be read without wading through policy.
-"""
+"""Disaster data access."""
 
 from __future__ import annotations
 
@@ -39,24 +33,14 @@ def _apply_filters(
     lng: float | None,
     radius_km: float | None,
 ) -> Select:
-    """Compose the WHERE clause.
-
-    Shared by the page query and the count query, so the total can never
-    disagree with the rows - a classic pagination bug when the two are written
-    out separately.
-    """
+    """Compose the WHERE clause."""
     if tag:
-        # Array containment. Uses the GIN index; `tag = ANY(tags)` would not.
         stmt = stmt.where(Disaster.tags.contains([tag]))
 
     if status is not None:
         stmt = stmt.where(Disaster.status == status)
 
     if q:
-        # Leading-wildcard ILIKE, backed by the pg_trgm GIN index created in the
-        # initial migration. Adequate for an operator search box; a real
-        # full-text requirement would want tsvector + ts_rank instead, which is
-        # noted as a trade-off in the README.
         pattern = f"%{q.strip()}%"
         stmt = stmt.where(or_(Disaster.title.ilike(pattern), Disaster.description.ilike(pattern)))
 
@@ -64,8 +48,6 @@ def _apply_filters(
         stmt = stmt.where(Disaster.created_by == created_by)
 
     if lat is not None and lng is not None and radius_km:
-        # Rows with an unresolved location cannot satisfy a proximity filter.
-        # ST_DWithin on NULL yields NULL (not false), so exclude them explicitly.
         stmt = stmt.where(
             Disaster.location.isnot(None),
             within_radius(Disaster.location, lat, lng, radius_km),
@@ -101,8 +83,6 @@ async def list_disasters(
     """Return one page of disasters plus the unpaginated total."""
     has_point = lat is not None and lng is not None
 
-    # Only select the distance column when there is a point to measure from;
-    # computing it otherwise would be wasted work on every row.
     if has_point:
         distance = distance_km(Disaster.location, lat, lng).label("distance_km")
         stmt = select(Disaster, distance)
@@ -115,23 +95,16 @@ async def list_disasters(
     )
 
     if sort == "distance" and has_point:
-        # NULLS LAST so unlocated incidents sort to the end rather than the front
-        # (in Postgres, NULL sorts last on ASC by default, but being explicit
-        # here survives a future switch to DESC).
         stmt = stmt.order_by(
             distance_km(Disaster.location, lat, lng).asc().nullslast()
         )
     else:
         stmt = stmt.order_by(_SORTS.get(sort, desc(Disaster.created_at)))
 
-    # Deterministic tie-break. Without it, two rows sharing a created_at can swap
-    # between pages and an item is shown twice or skipped entirely.
     stmt = stmt.order_by(desc(Disaster.id))
 
     page = await session.execute(stmt.limit(limit).offset(offset))
 
-    # Count over the same predicates. select_from is required because the
-    # distance column would otherwise confuse the implicit FROM inference.
     count_stmt = _apply_filters(
         select(func.count(Disaster.id)).select_from(Disaster),
         tag=tag, status=status, q=q, created_by=created_by,
@@ -148,8 +121,6 @@ async def list_disasters(
 
 
 def _round(value: float | None) -> float | None:
-    # Three decimals is metre precision. More digits imply an accuracy the
-    # underlying geocoding does not have.
     return round(float(value), 3) if value is not None else None
 
 
@@ -189,9 +160,6 @@ async def create(
     )
     session.add(disaster)
     await session.flush()
-    # The location was written as a SQL expression, so the in-memory attribute
-    # still holds that expression rather than a value. Refresh to read back what
-    # the database actually stored.
     await session.refresh(disaster)
     return disaster
 
@@ -201,12 +169,7 @@ async def update(
     disaster: Disaster,
     changes: dict[str, Any],
 ) -> Disaster:
-    """Apply a partial update.
-
-    ``changes`` must already be reduced to the fields the caller actually set -
-    the service layer does that with ``model_dump(exclude_unset=True)``, which is
-    what keeps "not provided" distinct from "set to null".
-    """
+    """Apply a partial update."""
     coords_changed = "latitude" in changes or "longitude" in changes
     latitude = changes.pop("latitude", None)
     longitude = changes.pop("longitude", None)
@@ -232,11 +195,7 @@ async def delete(session: AsyncSession, disaster: Disaster) -> None:
 
 
 async def list_active_ids(session: AsyncSession, *, limit: int = 100) -> list[uuid.UUID]:
-    """Ids of incidents still being responded to.
-
-    Used by the background worker to decide which report caches are worth
-    pre-warming: there is no value in refreshing reports for a resolved incident.
-    """
+    """Ids of incidents still being responded to."""
     stmt = (
         select(Disaster.id)
         .where(

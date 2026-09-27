@@ -1,9 +1,4 @@
-"""Async engine, session factory and the FastAPI session dependency.
-
-One engine per process (it owns the connection pool), one session per request.
-A session is a unit of work: it must not be shared between requests, because it
-holds identity-map state and an open transaction.
-"""
+"""Async engine, session factory and the FastAPI session dependency."""
 
 from __future__ import annotations
 
@@ -33,8 +28,6 @@ def get_engine() -> AsyncEngine:
             echo=settings.db_echo,
             pool_size=settings.db_pool_size,
             max_overflow=settings.db_max_overflow,
-            # Recycle below typical proxy/firewall idle timeouts so a checked-out
-            # connection is never already dead when a request grabs it.
             pool_recycle=1800,
             pool_pre_ping=True,
             future=True,
@@ -48,9 +41,6 @@ def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
         _sessionmaker = async_sessionmaker(
             bind=get_engine(),
             class_=AsyncSession,
-            # Keep attributes loaded after commit so a response model can still
-            # read them; otherwise every field access triggers a lazy refresh
-            # against a session we are about to close.
             expire_on_commit=False,
             autoflush=False,
         )
@@ -58,12 +48,7 @@ def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
 
 
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
-    """FastAPI dependency: one session per request, always closed.
-
-    Commit is the *service layer's* responsibility, not the dependency's - a
-    request that raises after a partial write must not have it silently
-    committed. This only guarantees rollback-on-error and close-on-exit.
-    """
+    """FastAPI dependency: one session per request, always closed."""
     factory = get_sessionmaker()
     session = factory()
     try:

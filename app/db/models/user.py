@@ -1,10 +1,4 @@
-"""User model.
-
-Lightweight by design - the brief asks for mock users, not an identity system.
-What it does get right: the password is stored only as an Argon2 hash, and the
-role lives in the database (not in the token alone) so a privilege change takes
-effect without waiting for a token to expire.
-"""
+"""User model."""
 
 from __future__ import annotations
 
@@ -27,8 +21,6 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     username: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     display_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
-    # Never the password itself. Argon2 output is ~97 chars; 255 leaves room to
-    # raise cost parameters (which lengthens the encoded hash) without a migration.
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
 
     role: Mapped[UserRole] = mapped_column(
@@ -40,7 +32,7 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     disasters: Mapped[list[Disaster]] = relationship(
         back_populates="creator",
-        lazy="noload",  # never implicitly lazy-load under asyncio; it raises at runtime
+        lazy="noload",
     )
 
     __table_args__ = (Index("ix_users_role", "role"),)

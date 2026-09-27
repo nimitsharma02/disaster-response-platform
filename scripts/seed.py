@@ -1,16 +1,4 @@
-"""Seed the database with demo users, resources and incidents.
-
-Run with::
-
-    docker compose exec api python -m scripts.seed
-
-Idempotent: re-running updates existing rows rather than duplicating them, so it
-is safe to run repeatedly while developing.
-
-Resources are clustered around two cities with *known* separations, so the
-geospatial tests have deterministic expectations rather than asserting against
-whatever the seed happened to produce.
-"""
+"""Seed the database with demo users, resources and incidents."""
 
 from __future__ import annotations
 
@@ -33,10 +21,6 @@ from app.repositories import disaster_repo, resource_repo
 configure_logging()
 log = structlog.get_logger("seed")
 
-# --------------------------------------------------------------------------- #
-# Demo accounts. Passwords come from settings so they are configurable and never
-# hardcoded into the repository.
-# --------------------------------------------------------------------------- #
 
 USERS = [
     ("admin", "Aisha Rahman (Coordinator)", UserRole.ADMIN, settings.seed_admin_password),
@@ -47,16 +31,11 @@ USERS = [
     ("responder", "Sam Okoro (Responder)", UserRole.RESPONDER, settings.seed_responder_password),
 ]
 
-# --------------------------------------------------------------------------- #
-# Resources. Distances from each city centre are noted so tests can assert on
-# radius boundaries without magic numbers.
-# --------------------------------------------------------------------------- #
 
-NYC = (40.7128, -74.0060)      # Lower Manhattan, the reference point in tests
+NYC = (40.7128, -74.0060)
 MUMBAI = (19.0760, 72.8777)
 
 RESOURCES = [
-    # --- New York, ordered roughly by distance from NYC reference -----------
     ("NYC Emergency Command Post", ResourceType.RESCUE, 40.7130, -74.0055, "Broadway, NY", 40),
     ("Downtown Water Distribution", ResourceType.WATER, 40.7155, -74.0090, "Chambers St, NY", 5000),
     ("City Hall Food Bank", ResourceType.FOOD, 40.7127, -74.0059, "City Hall Park, NY", 1200),
@@ -80,7 +59,7 @@ RESOURCES = [
     ("Newark Regional Hospital", ResourceType.HOSPITAL, 40.7357, -74.1724, "Newark, NJ", 700),
     ("Jersey City Food Depot", ResourceType.FOOD, 40.7178, -74.0431, "Jersey City, NJ", 900),
 
-    # --- Mumbai ------------------------------------------------------------
+    # Mumbai
     ("Mumbai Disaster Control Room", ResourceType.RESCUE, 19.0765, 72.8780, "Fort, Mumbai", 80),
     ("Colaba Water Tanker Point", ResourceType.WATER, 19.0728, 72.8826, "Colaba, Mumbai", 4000),
     ("JJ Hospital", ResourceType.HOSPITAL, 18.9633, 72.8342, "Byculla, Mumbai", 1350),
@@ -93,7 +72,6 @@ RESOURCES = [
     ("Thane Rescue Station", ResourceType.RESCUE, 19.2183, 72.9781, "Thane, Mumbai", 120),
     ("Navi Mumbai Shelter", ResourceType.SHELTER, 19.0330, 73.0297, "Vashi, Navi Mumbai", 900),
 
-    # --- Elsewhere, so proximity filters have something to exclude ---------
     ("London Emergency Depot", ResourceType.RESCUE, 51.5074, -0.1278, "London, UK", 200),
     ("Tokyo Evacuation Centre", ResourceType.EVACUATION_POINT, 35.6762, 139.6503, "Tokyo, Japan",
      5000),
@@ -102,10 +80,6 @@ RESOURCES = [
     ("Dhaka Water Point", ResourceType.WATER, 23.8103, 90.4125, "Dhaka, Bangladesh", 6000),
 ]
 
-# --------------------------------------------------------------------------- #
-# Incidents. Descriptions are written so the extractor has a real place to find,
-# demonstrating resolution rather than relying on supplied coordinates.
-# --------------------------------------------------------------------------- #
 
 DISASTERS = [
     (
@@ -165,7 +139,7 @@ async def seed() -> None:
     factory = get_sessionmaker()
 
     async with factory() as session:
-        # --- users ---------------------------------------------------------
+        # users
         users: dict[str, User] = {}
         for username, display_name, role, password in USERS:
             existing = (
@@ -173,8 +147,6 @@ async def seed() -> None:
             ).scalar_one_or_none()
 
             if existing:
-                # Re-hash on every run so changing a seed password in .env takes
-                # effect without needing a database reset.
                 existing.password_hash = hash_password(password)
                 existing.role = role
                 existing.display_name = display_name
@@ -193,7 +165,7 @@ async def seed() -> None:
         await session.flush()
         log.info("users_seeded", count=len(users))
 
-        # --- resources -----------------------------------------------------
+        # resources
         created_resources = 0
         for name, resource_type, lat, lng, address, capacity in RESOURCES:
             existing = (
@@ -215,10 +187,7 @@ async def seed() -> None:
         await session.flush()
         log.info("resources_seeded", created=created_resources, total=len(RESOURCES))
 
-        # --- disasters -----------------------------------------------------
-        # Resolution runs for real here, exercising the extractor plus whichever
-        # geocoder is reachable. It is also the quickest end-to-end smoke test:
-        # if seeding produces located incidents, the pipeline works.
+        # disasters
         from app.services import geocoding_service
 
         created_disasters = 0

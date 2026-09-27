@@ -1,42 +1,4 @@
-"""Community reports: fetch, normalise, classify, cache, degrade.
-
-Request flow::
-
-    GET /disasters/{id}/reports
-        |
-        v
-    build query from the disaster (location_name, else title)
-        |
-        v
-    cache.get_or_set("reports:{id}")
-        | HIT  -> return immediately, no external call at all
-        | MISS -> loader:
-        |            asyncio.gather(social, official)   <- concurrent, not serial
-        |            at least one succeeded -> return what we have, note failures
-        |            all failed             -> raise, so the cache serves stale
-        v
-    classify -> sort -> filter -> respond, with honest metadata
-
-Points worth defending:
-
-**Providers are fetched concurrently.** They are independent, so ``asyncio.gather``
-makes the endpoint as slow as the slowest provider rather than the sum of both.
-``return_exceptions=True`` is essential here: without it, one failure cancels the
-sibling task and a working provider's data is thrown away.
-
-**Partial failure is a first-class outcome.** One provider down still returns the
-other's reports, with ``degraded: true`` and a per-provider ``sources`` map. A
-partial result is cached with a **shortened TTL**, so we retry the broken
-provider in a minute instead of serving a half-empty feed for the full window.
-
-**Total failure returns stale data, not an error.** If both providers are down
-and we have anything cached within the stale window, it is served with
-``X-Cache: STALE`` and ``degraded: true``. Only a cold cache plus a dead upstream
-produces a 502.
-
-**The disaster's own record is never at risk.** These calls happen on the reports
-endpoint alone. A dead social API cannot affect disaster CRUD.
-"""
+"""Community reports: fetch, normalise, classify, cache, degrade."""
 
 from __future__ import annotations
 
@@ -57,18 +19,11 @@ from app.services import classification, disaster_service
 
 log = structlog.get_logger(__name__)
 
-# A degraded payload is cached only briefly, so a recovering provider is picked
-# up quickly rather than being masked for the full TTL.
 _DEGRADED_TTL = 60
 
 
 def _query_for(disaster: Disaster) -> str:
-    """What to ask the providers about.
-
-    The resolved place name is the best query when we have one; the title is the
-    fallback, since it usually names the location too ("Manhattan Flash
-    Flooding").
-    """
+    """What to ask the providers about."""
     return (disaster.location_name or disaster.title).strip()
 
 
@@ -102,20 +57,12 @@ async def get_reports(
     raw_reports = payload.get("reports", []) if isinstance(payload, dict) else []
     sources = payload.get("sources", {}) if isinstance(payload, dict) else {}
 
-    # A provider that failed on the way in makes this payload degraded, and so
-    # does serving it from the stale window after an origin failure.
     provider_degraded = any(state not in ("ok", "empty") for state in sources.values())
     degraded = result.degraded or provider_degraded
 
     if result.degraded:
-        # We are serving a cached payload because the live fetch failed. The
-        # `sources` map stored alongside that payload describes the request that
-        # originally populated it - very likely "ok, ok" - which would be an
-        # actively misleading thing to report now. Replace it with why each
-        # provider failed on THIS request.
         sources = _current_provider_states()
 
-    # Shorten the cache life of a partial result so recovery is picked up fast.
     if provider_degraded and result.status == "MISS":
         await cache.set(key, payload, ttl=_DEGRADED_TTL, stale_grace=settings.cache_stale_grace)
 
@@ -157,12 +104,7 @@ async def get_reports(
 
 
 def _current_provider_states() -> dict[str, str]:
-    """Why each provider is unavailable right now.
-
-    Read from the circuit breakers rather than from the cached payload, so a
-    degraded response reports the live reason ("circuit_open" vs "failed")
-    instead of the provenance of whatever was cached earlier.
-    """
+    """Why each provider is unavailable right now."""
     states: dict[str, str] = {}
     for provider in (social_client.PROVIDER, official_client.PROVIDER):
         breaker = get_breaker(provider)
@@ -173,15 +115,10 @@ def _current_provider_states() -> dict[str, str]:
 
 
 async def _fetch_all(query: str) -> tuple[list[Report], dict[str, str]]:
-    """Fetch both providers concurrently and merge what came back.
-
-    Raises only when **every** provider failed, which is the signal the cache
-    layer needs in order to fall back to stale data.
-    """
+    """Fetch both providers concurrently and merge what came back."""
     social_task = social_client.fetch_reports(query, limit=12)
     official_task = official_client.fetch_bulletins(query, limit=5)
 
-    # return_exceptions=True: one provider failing must not cancel the other.
     results = await asyncio.gather(social_task, official_task, return_exceptions=True)
 
     reports: list[Report] = []
@@ -192,8 +129,6 @@ async def _fetch_all(query: str) -> tuple[list[Report], dict[str, str]]:
         (social_client.PROVIDER, official_client.PROVIDER), results, strict=True
     ):
         if isinstance(outcome, CircuitOpenError):
-            # Distinguished from a plain failure on purpose: it means we chose
-            # not to call, which is useful when reading an incident afterwards.
             outcomes[provider] = "circuit_open"
             failures += 1
         elif isinstance(outcome, BaseException):
@@ -205,17 +140,11 @@ async def _fetch_all(query: str) -> tuple[list[Report], dict[str, str]]:
             reports.extend(outcome)
 
     if failures == len(results):
-        # Every provider is down. Raise so get_or_set can serve stale data.
         raise RuntimeError(f"all report providers failed: {outcomes}")
 
     return reports, outcomes
 
 
 async def invalidate_reports_cache(disaster_id: uuid.UUID) -> None:
-    """Drop the cached reports for one incident.
-
-    Called when a disaster's description or location changes, because the
-    provider query is derived from those fields - keeping the old payload would
-    mean showing reports for the wrong place.
-    """
+    """Drop the cached reports for one incident."""
     await cache.invalidate(cache.make_key("reports", str(disaster_id)))

@@ -1,13 +1,4 @@
-"""Application configuration.
-
-Every tunable lives here and is read from the environment exactly once, at import
-time, into a frozen singleton. Two reasons for that choice:
-
-1.  It fails fast. A missing or malformed value raises on startup rather than on
-    the first request that happens to need it.
-2.  Nothing else in the codebase reads ``os.environ`` directly, so there is one
-    honest answer to "where does this value come from?".
-"""
+"""Application configuration."""
 
 from __future__ import annotations
 
@@ -22,11 +13,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        extra="ignore",  # compose injects POSTGRES_* vars the app itself never reads
+        extra="ignore",
         case_sensitive=False,
     )
 
-    # --- Application -------------------------------------------------------
+    # Application
     app_name: str = "Disaster Response Coordination Platform"
     app_version: str = "1.0.0"
     app_env: Literal["development", "test", "production"] = "development"
@@ -35,7 +26,7 @@ class Settings(BaseSettings):
     api_prefix: str = "/api/v1"
     cors_origins: str = "*"
 
-    # --- Database ----------------------------------------------------------
+    # Database
     database_url: str = "postgresql+asyncpg://drp:drp_local_password@localhost:5432/disaster_response"
     test_database_url: str = (
         "postgresql+asyncpg://drp:drp_local_password@localhost:5432/disaster_response_test"
@@ -44,7 +35,7 @@ class Settings(BaseSettings):
     db_max_overflow: int = 5
     db_echo: bool = False
 
-    # --- Redis / cache -----------------------------------------------------
+    # Redis / cache
     redis_url: str = "redis://localhost:6379/0"
     cache_allow_memory_fallback: bool = True
     cache_ttl_geocode: int = 604_800
@@ -54,7 +45,7 @@ class Settings(BaseSettings):
     cache_stale_grace: int = 3_600
     cache_l1_ttl: int = 30
 
-    # --- Auth --------------------------------------------------------------
+    # Auth
     jwt_secret: str = "dev-only-insecure-secret-change-me"
     jwt_algorithm: str = "HS256"
     jwt_expires_minutes: int = 720
@@ -62,7 +53,7 @@ class Settings(BaseSettings):
     seed_contributor_password: str = "contributor123"
     seed_responder_password: str = "responder123"
 
-    # --- External services -------------------------------------------------
+    # External services
     social_api_base_url: str = "http://localhost:9000"
     official_api_base_url: str = "http://localhost:9000"
     geocoder_enabled: bool = True
@@ -72,23 +63,21 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-5"
 
-    # --- Resilience --------------------------------------------------------
+    # Resilience
     http_connect_timeout_s: float = 2.0
     http_read_timeout_s: float = 5.0
     http_max_retries: int = 2
     circuit_fail_threshold: int = 5
     circuit_reset_timeout_s: float = 30.0
 
-    # --- Rate limiting -----------------------------------------------------
+    # Rate limiting
     rate_limit_enabled: bool = True
     rate_limit_requests: int = 120
     rate_limit_window_s: int = 60
     auth_rate_limit_requests: int = 10
     auth_rate_limit_window_s: int = 60
 
-    # --- Geospatial guard rails -------------------------------------------
-    # An unbounded radius would let one request scan the whole resource table,
-    # so the API caps it rather than trusting the caller.
+    # Geospatial guard rails
     max_radius_km: float = Field(default=500.0, gt=0)
     default_radius_km: float = Field(default=10.0, gt=0)
 

@@ -16,11 +16,6 @@ from app.schemas.common import ProblemDetail
 
 log = structlog.get_logger(__name__)
 
-# A genuine Argon2 hash of a random throwaway string, computed once at import.
-# Verifying against it when the username does not exist makes the "no such user"
-# path cost the same as the "wrong password" path, so response timing cannot be
-# used to enumerate accounts. It must be a *real* hash - a hand-written constant
-# would fail to parse, return instantly, and reintroduce the timing difference.
 _DUMMY_HASH = hash_password(secrets.token_urlsafe(32))
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -36,22 +31,9 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
     },
 )
 async def login(payload: LoginRequest, session: DbSession) -> TokenResponse:
-    """Authenticate and return a bearer token.
-
-    Seeded demo accounts (created by ``scripts/seed.py``):
-
-    | username    | role        | can do                                  |
-    |-------------|-------------|-----------------------------------------|
-    | admin       | admin       | everything, including DELETE            |
-    | contributor | contributor | create; update **only their own** records |
-    | responder   | responder   | read-only                               |
-    """
+    """Authenticate and return a bearer token."""
     user = await user_repo.get_by_username(session, payload.username)
 
-    # One message and one code path for "no such user" and "wrong password".
-    # Distinguishing them would turn this endpoint into a username oracle.
-    # The password is verified even when the user is missing, so the response
-    # time does not leak account existence either.
     password_hash = user.password_hash if user else _DUMMY_HASH
     password_ok = verify_password(payload.password, password_hash)
 
@@ -95,11 +77,5 @@ async def me(user: CurrentUser, session: DbSession) -> UserPublic:
     status_code=status.HTTP_200_OK,
 )
 async def list_users(user: CurrentUser, session: DbSession) -> list[UserPublic]:
-    """Convenience endpoint for exploring the demo.
-
-    Authentication is required, and only public fields are returned - no hashes.
-    A real system would restrict this to admins; it is open to any authenticated
-    caller here purely so a reviewer can see the seeded roles.
-    """
+    """Convenience endpoint for exploring the demo."""
     return [UserPublic.model_validate(u) for u in await user_repo.list_all(session)]
-

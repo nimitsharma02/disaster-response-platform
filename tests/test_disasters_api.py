@@ -1,7 +1,4 @@
-"""API endpoint tests: disaster CRUD, filtering and location resolution.
-
-Covers the brief's "test at least one API endpoint".
-"""
+"""API endpoint tests: disaster CRUD, filtering and location resolution."""
 
 from __future__ import annotations
 
@@ -11,13 +8,7 @@ pytestmark = pytest.mark.asyncio
 
 
 async def test_create_disaster_resolves_location_from_description(client, contributor_headers):
-    """The headline behaviour: a location is derived from free text.
-
-    Uses the exact example from the brief. No coordinates are sent; the service
-    must extract "Manhattan, NYC" and resolve it to a point. With
-    GEOCODER_ENABLED=false in the test environment this exercises the offline
-    path end to end, which is also the path a reviewer gets with no API keys.
-    """
+    """The headline behaviour: a location is derived from free text."""
     response = await client.post(
         "/api/v1/disasters",
         headers=contributor_headers,
@@ -38,15 +29,11 @@ async def test_create_disaster_resolves_location_from_description(client, contri
 
     location = body["location"]
     assert location["point"] is not None, "location should have been resolved"
-    # Manhattan is around 40.78 N, -73.97 E. Generous bounds: we are asserting
-    # that resolution landed in the right place, not testing the gazetteer's
-    # precision.
     assert 40.5 < location["point"]["latitude"] < 41.0
     assert -74.2 < location["point"]["longitude"] < -73.7
     assert location["source"] is not None and location["source"] != "unresolved"
     assert 0 < location["confidence"] <= 1
 
-    # Provenance must be reported, not silently implied.
     assert "gazetteer" in location["source"] or "nominatim" in location["source"]
 
 
@@ -75,11 +62,7 @@ async def test_create_disaster_accepts_explicit_coordinates(client, contributor_
 async def test_create_disaster_without_recognisable_place_still_succeeds(
     client, contributor_headers
 ):
-    """Resolution failure must never block recording an incident.
-
-    This is a deliberate product decision: a report filed under pressure with a
-    vague description is still worth having.
-    """
+    """Resolution failure must never block recording an incident."""
     response = await client.post(
         "/api/v1/disasters",
         headers=contributor_headers,
@@ -95,7 +78,7 @@ async def test_create_disaster_without_recognisable_place_still_succeeds(
 
 
 async def test_list_disasters_filters_by_tag(client, contributor_headers):
-    """``GET /disasters?tag=flood`` - the filter named in the brief."""
+    """GET /disasters?tag=flood, the filter named in the brief."""
     for title, tags in [
         ("Flood One", ["flood", "urgent"]),
         ("Flood Two", ["flood"]),
@@ -134,7 +117,6 @@ async def test_tags_are_normalised_so_filtering_is_reliable(client, contributor_
         },
     )
     assert created.status_code == 201, created.text
-    # Lowercased, spaces to hyphens, duplicates collapsed, order preserved.
     assert created.json()["tags"] == ["flood", "storm-surge"]
 
     found = await client.get("/api/v1/disasters?tag=flood")
@@ -202,7 +184,6 @@ async def test_pagination_reports_accurate_total(client, contributor_headers):
     body = response.json()
 
     assert len(body["items"]) == 2
-    # total must reflect every matching row, not the page size.
     assert body["meta"]["total"] == 5
     assert body["meta"]["has_more"] is True
 

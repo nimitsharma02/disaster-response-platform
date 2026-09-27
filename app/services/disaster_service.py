@@ -1,14 +1,4 @@
-"""Disaster business logic.
-
-This layer owns the rules. Routes handle HTTP, repositories handle SQL, and
-everything in between - authorization on a specific record, location resolution,
-audit trail, event emission, transaction boundaries - lives here.
-
-The transaction rule is: **one commit per use case, at the end, and events are
-published only after it succeeds.** A disaster row, its audit entry, and the
-decision to broadcast all belong to the same unit of work. Emitting the event
-first would announce a change that could still roll back.
-"""
+"""Disaster business logic."""
 
 from __future__ import annotations
 
@@ -41,23 +31,11 @@ log = structlog.get_logger(__name__)
 ENTITY = "disaster"
 
 
-# --------------------------------------------------------------------------- #
 # Authorization
-# --------------------------------------------------------------------------- #
 
 
 def assert_can_modify(disaster: Disaster, actor: AuthenticatedUser) -> None:
-    """The record-level rule the brief asks to be demonstrated.
-
-    Role alone is not enough here. A contributor is allowed to update *their own*
-    incidents, so the check is a function of both the actor and the record - the
-    distinction between role-based access control and ownership. Only the service
-    layer can enforce it, because only it has loaded the record.
-
-        admin       -> may modify anything
-        contributor -> may modify only rows where created_by == their id
-        responder    -> never reaches here (blocked by the role gate on the route)
-    """
+    """The record-level rule the brief asks to be demonstrated."""
     if actor.role == UserRole.ADMIN:
         return
     if disaster.created_by != actor.id:
@@ -74,9 +52,7 @@ def assert_can_modify(disaster: Disaster, actor: AuthenticatedUser) -> None:
         )
 
 
-# --------------------------------------------------------------------------- #
 # Reads
-# --------------------------------------------------------------------------- #
 
 
 async def get_disaster(session: AsyncSession, disaster_id: uuid.UUID) -> Disaster:
@@ -112,9 +88,7 @@ async def list_disasters(
     )
 
 
-# --------------------------------------------------------------------------- #
 # Writes
-# --------------------------------------------------------------------------- #
 
 
 async def create_disaster(
@@ -126,7 +100,6 @@ async def create_disaster(
 ) -> Disaster:
     """Create an incident, resolving its location when coordinates were not given."""
     if payload.latitude is not None and payload.longitude is not None:
-        # An explicit coordinate from a human always wins over inference.
         latitude, longitude = payload.latitude, payload.longitude
         location_name = payload.location_name
         source, confidence = "manual", 1.0
@@ -177,7 +150,6 @@ async def create_disaster(
         resolved=latitude is not None,
     )
 
-    # Only now - the write is durable.
     await events.publish(events.EventType.DISASTER_CREATED, events.disaster_payload(disaster))
     return disaster
 
@@ -193,15 +165,10 @@ async def update_disaster(
     disaster = await get_disaster(session, disaster_id)
     assert_can_modify(disaster, actor)
 
-    # exclude_unset is what makes this a genuine PATCH: a field the client did
-    # not send is absent from the dict, so it is left untouched rather than
-    # overwritten with a default.
     changes = payload.model_dump(exclude_unset=True, exclude={"reresolve_location"})
 
     before = _snapshot(disaster)
 
-    # Re-resolve when explicitly asked, or when the description changed and no
-    # manual coordinates were supplied with it.
     should_reresolve = payload.reresolve_location or (
         "description" in changes and "latitude" not in changes
     )
@@ -259,14 +226,7 @@ async def delete_disaster(
     *,
     request_id: str | None = None,
 ) -> None:
-    """Delete an incident. Admin-only; the route enforces the role gate.
-
-    Hard delete, with the audit entry as the surviving record. A soft delete
-    would be better for a production system (the README says so), but it is the
-    kind of scope creep that quietly infects every query with
-    ``WHERE deleted_at IS NULL``, so it is left out deliberately rather than
-    half-done.
-    """
+    """Delete an incident."""
     disaster = await get_disaster(session, disaster_id)
     assert_can_modify(disaster, actor)
 
@@ -290,9 +250,7 @@ async def delete_disaster(
     await events.publish(events.EventType.DISASTER_DELETED, payload)
 
 
-# --------------------------------------------------------------------------- #
 # Serialization
-# --------------------------------------------------------------------------- #
 
 
 def _snapshot(disaster: Disaster) -> dict[str, Any]:
@@ -311,12 +269,7 @@ def _snapshot(disaster: Disaster) -> dict[str, Any]:
 
 
 def to_response(disaster: Disaster, *, distance_km: float | None = None) -> DisasterResponse:
-    """Map an ORM row onto the public response model.
-
-    Done explicitly rather than by ``from_attributes`` alone, because the stored
-    geography column is a WKB blob and the API contract is
-    ``{latitude, longitude}``. That translation belongs here, at the boundary.
-    """
+    """Map an ORM row onto the public response model."""
     coords = point_to_lat_lng(disaster.location)
 
     return DisasterResponse(

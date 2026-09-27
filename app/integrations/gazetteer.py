@@ -1,23 +1,4 @@
-"""Offline gazetteer and rule-based place extraction.
-
-This module is the reason the platform needs no API keys and no network to work.
-It does two jobs:
-
-1. **Extract** a probable place name from free text
-   ("Heavy flooding has affected Manhattan, NYC." -> "Manhattan, NYC").
-2. **Resolve** a place name to coordinates from a bundled lookup table, when the
-   online geocoder is unavailable, disabled, or rate-limited.
-
-The extractor is deliberately rule-based rather than a full NER model. For this
-domain the text is short and formulaic - incident reports name places after a
-small set of prepositions - so a handful of patterns plus a known-place
-dictionary gets most of the value at none of the cost, and unlike a model it is
-deterministic, instant, and explains itself. The LLM path in ``llm.py`` handles
-the messier inputs when a key is configured; this is the floor, not the ceiling.
-
-Coordinates are approximate centroids, adequate for radius search at city or
-district scale. They are not survey data and the confidence score says so.
-"""
+"""Offline gazetteer and rule-based place extraction."""
 
 from __future__ import annotations
 
@@ -37,12 +18,8 @@ class GazetteerEntry:
     country: str
 
 
-# --------------------------------------------------------------------------- #
-# Bundled places. Keys are lowercase lookup aliases; several may map to one entry.
-# --------------------------------------------------------------------------- #
-
 _RAW_PLACES: list[tuple[list[str], str, float, float, str]] = [
-    # --- United States -----------------------------------------------------
+    # United States
     (["manhattan", "manhattan nyc", "manhattan, nyc", "manhattan new york"],
      "Manhattan, New York, USA", 40.7831, -73.9712, "US"),
     (["new york", "nyc", "new york city"], "New York City, USA", 40.7128, -74.0060, "US"),
@@ -65,7 +42,7 @@ _RAW_PLACES: list[tuple[list[str], str, float, float, str]] = [
     (["florida"], "Florida, USA", 27.6648, -81.5158, "US"),
     (["texas"], "Texas, USA", 31.9686, -99.9018, "US"),
 
-    # --- India -------------------------------------------------------------
+    # India
     (["mumbai", "bombay"], "Mumbai, India", 19.0760, 72.8777, "IN"),
     (["delhi", "new delhi"], "New Delhi, India", 28.6139, 77.2090, "IN"),
     (["bengaluru", "bangalore"], "Bengaluru, India", 12.9716, 77.5946, "IN"),
@@ -95,7 +72,7 @@ _RAW_PLACES: list[tuple[list[str], str, float, float, str]] = [
     (["srinagar", "kashmir"], "Srinagar, India", 34.0837, 74.7973, "IN"),
     (["leh", "ladakh"], "Leh, Ladakh, India", 34.1526, 77.5771, "IN"),
 
-    # --- Asia-Pacific ------------------------------------------------------
+    # Asia-Pacific
     (["tokyo"], "Tokyo, Japan", 35.6762, 139.6503, "JP"),
     (["osaka"], "Osaka, Japan", 34.6937, 135.5023, "JP"),
     (["sendai"], "Sendai, Japan", 38.2682, 140.8694, "JP"),
@@ -121,7 +98,7 @@ _RAW_PLACES: list[tuple[list[str], str, float, float, str]] = [
     (["auckland"], "Auckland, New Zealand", -36.8485, 174.7633, "NZ"),
     (["christchurch"], "Christchurch, New Zealand", -43.5321, 172.6362, "NZ"),
 
-    # --- Europe ------------------------------------------------------------
+    # Europe
     (["london"], "London, United Kingdom", 51.5074, -0.1278, "GB"),
     (["manchester"], "Manchester, United Kingdom", 53.4808, -2.2426, "GB"),
     (["paris"], "Paris, France", 48.8566, 2.3522, "FR"),
@@ -139,7 +116,6 @@ _RAW_PLACES: list[tuple[list[str], str, float, float, str]] = [
     (["kyiv", "kiev"], "Kyiv, Ukraine", 50.4501, 30.5234, "UA"),
     (["warsaw"], "Warsaw, Poland", 52.2297, 21.0122, "PL"),
 
-    # --- Americas / Africa / Middle East ----------------------------------
     (["mexico city"], "Mexico City, Mexico", 19.4326, -99.1332, "MX"),
     (["sao paulo", "são paulo"], "Sao Paulo, Brazil", -23.5505, -46.6333, "BR"),
     (["rio de janeiro", "rio"], "Rio de Janeiro, Brazil", -22.9068, -43.1729, "BR"),
@@ -174,16 +150,11 @@ for _aliases, _name, _lat, _lng, _country in _RAW_PLACES:
     for _alias in _aliases:
         GAZETTEER[_alias] = _entry
 
-# Longest first, so "manhattan, nyc" wins over the substring "manhattan".
 _SORTED_ALIASES: list[str] = sorted(GAZETTEER, key=len, reverse=True)
 
 
-# --------------------------------------------------------------------------- #
 # Extraction
-# --------------------------------------------------------------------------- #
 
-# Words that begin a sentence or are otherwise capitalised without being places.
-# Without this list, "Heavy flooding..." yields the candidate "Heavy".
 _STOPWORDS = frozenset({
     "a", "an", "and", "are", "as", "at", "be", "been", "being", "by", "for", "from", "has",
     "have", "heavy", "in", "into", "is", "it", "its", "major", "severe", "several", "of", "on",
@@ -198,25 +169,19 @@ _STOPWORDS = frozenset({
     "explosion", "collapse",
 })
 
-# Prepositions that reliably precede a place name in incident reports.
 _CUES = r"(?:in|at|near|across|around|throughout|affecting|affected|hit|struck|around)"
 
-# "in Manhattan, NYC" / "near Banda Aceh" - a cue followed by a capitalised run,
-# optionally continued after a comma ("Manhattan, NYC").
 _CUE_PATTERN = re.compile(
     rf"\b{_CUES}\s+((?:[A-Z][\w.'-]*)(?:\s+[A-Z][\w.'-]*)*(?:\s*,\s*[A-Z][\w.'-]*(?:\s+[A-Z][\w.'-]*)*)?)",
     re.UNICODE,
 )
 
-# Any capitalised run, used as the weakest fallback signal.
 _PROPER_RUN = re.compile(
     r"\b((?:[A-Z][\w.'-]*)(?:\s+[A-Z][\w.'-]*)*(?:\s*,\s*[A-Z][\w.'-]*(?:\s+[A-Z][\w.'-]*)*)?)",
     re.UNICODE,
 )
 
 
-# Abbreviations whose trailing period does NOT end a sentence. Without this the
-# candidate "St. Louis" would be truncated to "St".
 _ABBREVIATIONS = frozenset(
     {"st", "mt", "ft", "pt", "rd", "dr", "ave", "blvd", "no", "dept", "co", "jr", "sr"}
 )
@@ -225,17 +190,7 @@ _SENTENCE_BREAK = re.compile(r"\.\s")
 
 
 def _cut_at_sentence_end(candidate: str) -> str:
-    """Truncate a candidate at the first real sentence boundary.
-
-    The token pattern deliberately allows an internal '.' so that "St. Louis"
-    stays one candidate. The side effect was that a match could run straight
-    past the end of a sentence: "...a warehouse in Brooklyn. Smoke is drifting"
-    produced the candidate "Brooklyn. Smoke", which then failed to geocode.
-
-    A period ends the candidate unless the word before it is a known
-    abbreviation, which distinguishes "Brooklyn." (sentence end) from "St."
-    (part of the name).
-    """
+    """Truncate a candidate at the first real sentence boundary."""
     for match in _SENTENCE_BREAK.finditer(candidate):
         preceding_word = re.search(r"([\w'-]+)\.$", candidate[: match.start() + 1])
         if preceding_word and preceding_word.group(1).lower() in _ABBREVIATIONS:
@@ -247,9 +202,6 @@ def _cut_at_sentence_end(candidate: str) -> str:
 def _clean(candidate: str) -> str:
     candidate = _cut_at_sentence_end(candidate)
     text = re.sub(r"\s+", " ", candidate).strip(" .,;:!?-")
-    # Drop a leading stopword that the regex swept in ("The Bronx" -> "Bronx"
-    # is wrong, but "Several Manhattan" -> "Manhattan" is right, so only strip
-    # when what remains is still a plausible name).
     parts = text.split()
     while parts and parts[0].lower() in _STOPWORDS and len(parts) > 1:
         parts.pop(0)
@@ -260,16 +212,11 @@ def _is_plausible(candidate: str) -> bool:
     if len(candidate) < 3 or len(candidate) > 120:
         return False
     words = [w.lower().strip(",") for w in candidate.split()]
-    # All-stopword runs ("Heavy Flooding") are not places.
     return not all(w in _STOPWORDS for w in words)
 
 
 def lookup(place: str) -> GazetteerEntry | None:
-    """Resolve a place name against the bundled table.
-
-    Tries an exact alias match first, then the longest alias contained in the
-    string, so "downtown Manhattan, NYC" still resolves.
-    """
+    """Resolve a place name against the bundled table."""
     key = re.sub(r"\s+", " ", place.strip().lower()).strip(" .,;:")
     if not key:
         return None
@@ -289,23 +236,7 @@ class ExtractionResult:
 
 
 def extract_place(description: str) -> ExtractionResult:
-    """Pull the most likely place name out of an incident description.
-
-    Candidates are scored by how much evidence supports them:
-
-    * 0.90 ``rules:cue_known``    - a known place preceded by a locative cue
-    * 0.75 ``rules:known``        - a known place anywhere in the text
-    * 0.55 ``rules:cue``          - an unknown proper noun after a locative cue
-    * 0.35 ``rules:proper_noun``  - an unknown proper noun, no cue
-    * 0.00 ``none``               - nothing plausible found
-
-    The method name describes only how the *name* was found. The geocoder that
-    turned it into coordinates is appended separately by the geocoding service,
-    producing e.g. ``rules:cue_known+nominatim``.
-
-    The confidence is propagated onto the disaster record, so a caller can tell
-    a solid match from a guess.
-    """
+    """Pull the most likely place name out of an incident description."""
     if not description or not description.strip():
         return ExtractionResult(None, 0.0, "none")
 
@@ -319,18 +250,14 @@ def extract_place(description: str) -> ExtractionResult:
         if lookup(candidate):
             return ExtractionResult(candidate, 0.90, "rules:cue_known")
 
-    # Known place anywhere in the text, even without a cue.
     lowered = text.lower()
     for alias in _SORTED_ALIASES:
         if re.search(rf"\b{re.escape(alias)}\b", lowered):
             return ExtractionResult(GAZETTEER[alias].name, 0.75, "rules:known")
 
-    # Unknown proper noun, but a cue says it is a location. Nominatim may know it.
     if cue_candidates:
         return ExtractionResult(cue_candidates[0], 0.55, "rules:cue")
 
-    # Weakest: any plausible proper noun. Skip the first word of the string,
-    # which is capitalised merely because sentences are.
     for match in _PROPER_RUN.finditer(text):
         if match.start() == 0:
             continue

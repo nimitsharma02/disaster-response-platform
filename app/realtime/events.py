@@ -1,31 +1,4 @@
-"""Real-time event bus.
-
-Events are published to a Redis pub/sub channel and fanned out from there to
-every connected WebSocket and SSE client:
-
-    service         Redis channel        transport         clients
-    -------         -------------        ---------         -------
-    publish() ----> drp:events -----> WebSocket /events/ws -> browser map
-                               \\----> SSE /events/stream ---> curl -N
-
-**Why via Redis rather than a process-local list of connections.** With more than
-one uvicorn worker, a connection lives in exactly one process. An in-process
-broadcast would reach only the clients that happened to land on the worker
-handling the write - everyone else silently misses the event. Pub/sub means any
-worker can publish and every worker delivers. The ``MemoryBackend`` fallback
-keeps this working single-process when Redis is absent, with that caveat logged.
-
-**Why publish after commit.** Publishing before the transaction commits would
-announce a change that can still be rolled back, and clients that immediately
-GET the resource would get a 404. Events are emitted by the service layer only
-once the write is durable.
-
-**Delivery is best-effort, at-most-once.** There is no replay buffer and no
-acknowledgement. A client that disconnects misses what happened while it was
-away and must re-fetch on reconnect. That is the correct trade for live
-situational awareness - the REST API remains the source of truth, this is a
-notification that it changed.
-"""
+"""Real-time event bus."""
 
 from __future__ import annotations
 
@@ -54,12 +27,7 @@ class EventType(StrEnum):
 
 
 def build_envelope(event_type: EventType | str, data: dict[str, Any]) -> dict[str, Any]:
-    """Wrap a payload in a consistent envelope.
-
-    ``id`` lets a client de-duplicate if it briefly holds two connections
-    (which happens during a reconnect), and ``ts`` lets it discard events that
-    arrived out of order.
-    """
+    """Wrap a payload in a consistent envelope."""
     return {
         "id": str(uuid.uuid4()),
         "event": str(event_type),
@@ -69,18 +37,12 @@ def build_envelope(event_type: EventType | str, data: dict[str, Any]) -> dict[st
 
 
 async def publish(event_type: EventType | str, data: dict[str, Any]) -> dict[str, Any]:
-    """Publish an event. Never raises.
-
-    A failure to broadcast must not fail the write that triggered it: the data
-    is already committed, and returning a 500 would tell the client their
-    perfectly successful update did not happen.
-    """
+    """Publish an event."""
     envelope = build_envelope(event_type, data)
     try:
         await get_backend().publish(CHANNEL, json.dumps(envelope, default=str))
         log.info(
             "event_published",
-            # NOT `event=`: structlog reserves that for the event name itself.
             event_type=envelope["event"],
             event_id=envelope["id"],
         )
@@ -100,12 +62,7 @@ async def subscribe() -> AsyncIterator[dict[str, Any]]:
 
 
 def disaster_payload(disaster: Any, *, distance_km: float | None = None) -> dict[str, Any]:
-    """Compact event payload for a disaster.
-
-    Deliberately a summary, not the full record. Events are broadcast to every
-    connected client, so they should carry enough to update a map marker and no
-    more; a client that needs the detail can GET it.
-    """
+    """Compact event payload for a disaster."""
     from app.repositories.geo import point_to_lat_lng
 
     coords = point_to_lat_lng(getattr(disaster, "location", None))

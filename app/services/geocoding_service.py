@@ -1,46 +1,4 @@
-"""Location resolution: free-text description -> coordinates.
-
-    "Heavy flooding has affected Manhattan, NYC."
-                    |
-                    v
-      STEP 1  extract a place name
-              LLM (only if ANTHROPIC_API_KEY is set)  --fails--> rule-based
-                    |                                            extractor
-                    v
-              "Manhattan, NYC"
-                    |
-                    v
-      STEP 2  resolve to coordinates
-              cache --miss--> Nominatim --fails/no match--> bundled gazetteer
-                    |                                            |
-                    v                                            v
-              (40.7831, -73.9712)                          still nothing?
-                                                                 |
-                                                                 v
-                                                        location = NULL,
-                                                        source = "unresolved"
-
-Design decisions worth stating plainly:
-
-**Extraction and geocoding are separate steps.** It is tempting to ask an LLM for
-coordinates directly. That is a bad idea: a model will happily produce a
-confident, plausible, wrong lat/lng, and nothing downstream can tell. So the
-model is only ever asked for a *name*, and a real geocoder turns names into
-points. Each component does the thing it can actually be held accountable for.
-
-**Failure is never fatal.** Every step degrades to a weaker one, and the final
-fallback is to record the incident with no location at all. Rejecting an incident
-report because a third-party geocoder was down would be the wrong behaviour for
-a disaster tool.
-
-**Both steps are cached, with very different TTLs.** Extraction is keyed by a
-hash of the description (24h; the mapping is deterministic, the TTL only bounds
-prompt changes). Geocoding is keyed by the place name (7 days; a city does not
-move, and this is what keeps us inside Nominatim's 1 req/s limit).
-
-**Confidence is multiplicative.** A 0.55 extraction feeding a 0.9 geocode is a
-~0.5 result overall - uncertainty compounds, and the number should say so.
-"""
+"""Location resolution: free-text description -> coordinates."""
 
 from __future__ import annotations
 
@@ -54,8 +12,6 @@ from app.integrations import gazetteer, llm, nominatim
 
 log = structlog.get_logger(__name__)
 
-# Geocoder confidence by provider. Nominatim is a real geocoding service; the
-# bundled gazetteer holds approximate city centroids, and is scored accordingly.
 _NOMINATIM_CONFIDENCE = 0.90
 _GAZETTEER_CONFIDENCE = 0.70
 
@@ -90,8 +46,6 @@ async def resolve_from_description(description: str) -> LocationResolution:
 
     geo = await _geocode(place)
     if geo is None:
-        # We know what the place is called but not where it is. Keep the name -
-        # it is still useful to an operator, and a later re-resolve may succeed.
         log.info("location_partially_resolved", place=place, method=extraction_method)
         return LocationResolution(
             location_name=place,
@@ -124,13 +78,11 @@ async def resolve_place_name(place: str) -> LocationResolution:
     )
 
 
-# --------------------------------------------------------------------------- #
 # Step 1: extraction
-# --------------------------------------------------------------------------- #
 
 
 async def _extract_place(description: str) -> tuple[str | None, float, str]:
-    """Return ``(place, confidence, method)``. Always succeeds; falls back to rules."""
+    """Return (place, confidence, method). Always succeeds; falls back to rules."""
     key = cache.make_key("nlp:place", description)
 
     cached = await cache.get(key)
@@ -149,11 +101,9 @@ async def _extract_place(description: str) -> tuple[str | None, float, str]:
             if place:
                 result = (place, confidence, "llm")
             else:
-                # The model ran and found nothing. Still try the rules: they use
-                # a gazetteer the model does not have.
                 rules = gazetteer.extract_place(description)
                 result = (rules.place, rules.confidence, rules.method)
-        except Exception as exc:  # noqa: BLE001 - any LLM failure falls through to rules
+        except Exception as exc:
             log.warning("llm_extraction_fell_back_to_rules", error=str(exc))
             rules = gazetteer.extract_place(description)
             result = (rules.place, rules.confidence, rules.method)
@@ -169,18 +119,11 @@ async def _extract_place(description: str) -> tuple[str | None, float, str]:
     return result
 
 
-# --------------------------------------------------------------------------- #
 # Step 2: geocoding
-# --------------------------------------------------------------------------- #
 
 
 async def _geocode(place: str) -> tuple[float, float, str, str, float] | None:
-    """Return ``(lat, lng, display_name, provider, confidence)`` or ``None``.
-
-    The cache wraps the *whole* decision including the gazetteer fallback, so a
-    period of Nominatim downtime does not cause every request to re-attempt a
-    call that is going to fail.
-    """
+    """Return (lat, lng, display_name, provider, confidence) or None."""
     key = cache.make_key("geocode", place)
 
     async def _resolve() -> dict[str, object] | None:
@@ -196,8 +139,6 @@ async def _geocode(place: str) -> tuple[float, float, str, str, float] | None:
                         "provider": "nominatim",
                         "confidence": _NOMINATIM_CONFIDENCE,
                     }
-                # A clean "no such place" - fall through to the gazetteer, which
-                # may still recognise an alias Nominatim does not.
             except Exception as exc:  # noqa: BLE001
                 log.warning("geocoder_unavailable_using_gazetteer", place=place, error=str(exc))
 
@@ -220,12 +161,10 @@ async def _geocode(place: str) -> tuple[float, float, str, str, float] | None:
             key,
             _resolve,
             ttl=settings.cache_ttl_geocode,
-            # A geocode is immutable enough that an old value is always better
-            # than none, so allow a long stale window.
             stale_grace=settings.cache_ttl_geocode,
         )
         payload = result.value
-    except Exception as exc:  # noqa: BLE001 - resolution must never break a write
+    except Exception as exc:
         log.error("geocode_cache_path_failed", place=place, error=str(exc))
         return None
 

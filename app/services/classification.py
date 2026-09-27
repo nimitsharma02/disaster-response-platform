@@ -1,31 +1,4 @@
-"""Priority classification for community reports (bonus feature).
-
-Turns free-text reports into a triage bucket - ``critical``, ``high``,
-``medium``, ``low`` - so an operator reading a hundred messages sees "family
-trapped, water rising" before "volunteers distributing food packets".
-
-**Why rules and not a model.** Three reasons, in order of importance:
-
-1. *Explainability.* Every score comes with ``matched_signals`` naming the rules
-   that fired. In a triage context an operator must be able to see why something
-   was ranked, and to overrule it. An opaque score that moves a rescue request
-   down the list is worse than no ranking at all.
-2. *Determinism.* The same text always produces the same bucket, which makes it
-   genuinely unit-testable. A model would need a fixture set and tolerance
-   bands.
-3. *Latency and cost.* This runs over every report on every cache miss. Rules
-   are microseconds and free.
-
-The honest limitation: keyword rules cannot read negation ("we are NOT trapped"),
-sarcasm, or languages other than English. Real triage would use this as a
-pre-filter and a trained classifier behind it. That is in the README as a known
-limitation, not hidden.
-
-**Scoring.** Additive weights, clamped to 0-1, then bucketed by threshold.
-Additive rather than "highest matching rule wins" so that several moderate
-signals can legitimately combine - "no water" plus "elderly" plus "two days"
-should outrank any of them alone.
-"""
+"""Priority classification for community reports (bonus feature)."""
 
 from __future__ import annotations
 
@@ -34,10 +7,6 @@ from dataclasses import dataclass
 
 from app.db.models.enums import ReportPriority
 from app.schemas.report import Report
-
-# --------------------------------------------------------------------------- #
-# Lexicons. Weight reflects how strongly the phrase implies danger to life.
-# --------------------------------------------------------------------------- #
 
 _LIFE_THREATENING: dict[str, float] = {
     "trapped": 0.55, "buried": 0.55, "drowning": 0.6, "not breathing": 0.6,
@@ -65,7 +34,6 @@ _SITUATIONAL: dict[str, float] = {
     "water logging": 0.12,
 }
 
-# Negative weights: reassurance should actively pull a report down the list.
 _DE_ESCALATING: dict[str, float] = {
     "we are all safe": -0.3, "all safe": -0.25, "everyone is safe": -0.3,
     "restored": -0.2, "under control": -0.25, "clean-up": -0.2, "cleanup": -0.2,
@@ -73,7 +41,6 @@ _DE_ESCALATING: dict[str, float] = {
     "distributing": -0.1, "volunteers": -0.08, "operational": -0.1,
 }
 
-# Vulnerable groups raise urgency for an otherwise identical need.
 _VULNERABLE = re.compile(
     r"\b(child|children|baby|babies|infant|toddler|elderly|grandmother|grandfather|"
     r"pregnant|disabled|wheelchair|diabetic|senior citizens?)\b",
@@ -91,8 +58,6 @@ _DURATION = re.compile(
     re.IGNORECASE,
 )
 
-# Bucket boundaries. Tuned against the seeded mock corpus so the obvious cases
-# land where a human would put them; see tests/test_classification.py.
 _THRESHOLD_CRITICAL = 0.70
 _THRESHOLD_HIGH = 0.42
 _THRESHOLD_MEDIUM = 0.18
@@ -113,10 +78,6 @@ def classify_text(text: str) -> Classification:
     lowered = text.lower()
     score = 0.0
     signals: list[str] = []
-    # Character spans already claimed by a lexicon phrase. Used to stop a bonus
-    # rule re-scoring words a phrase has already accounted for - "baby formula"
-    # matched the need lexicon AND the vulnerable-group regex on the same word,
-    # which inflated supply requests into the critical bucket.
     claimed: list[tuple[int, int]] = []
 
     for lexicon, label in (
@@ -132,8 +93,6 @@ def classify_text(text: str) -> Classification:
                 signals.append(f"{label}:{phrase.replace(' ', '_')}")
                 claimed.append((position, position + len(phrase)))
 
-    # ALL-CAPS words of 4+ letters read as shouting, which correlates with
-    # genuine urgency in this corpus. Short acronyms are excluded.
     if re.search(r"\b[A-Z]{4,}\b", text):
         score += 0.12
         signals.append("emphasis:shouting")
@@ -150,9 +109,6 @@ def classify_text(text: str) -> Classification:
     people = _PEOPLE_COUNT.search(text)
     if people:
         count = int(people.group(1))
-        # Scale with magnitude but cap it: 4 people trapped is not a tenth as
-        # urgent as 40, and a huge number is usually a news figure, not a
-        # rescue request.
         score += min(0.25, 0.06 + count / 1000)
         signals.append(f"people_affected:{count}")
 
@@ -165,7 +121,7 @@ def classify_text(text: str) -> Classification:
 
 
 def _overlaps(span: tuple[int, int], claimed: list[tuple[int, int]]) -> bool:
-    """True if ``span`` intersects any already-scored phrase."""
+    """True if span intersects any already-scored phrase."""
     start, end = span
     return any(
         start < claimed_end and claimed_start < end
@@ -184,12 +140,7 @@ def _bucket(score: float) -> ReportPriority:
 
 
 def classify_report(report: Report) -> Report:
-    """Return a copy of ``report`` with priority fields populated.
-
-    Official bulletins arrive with a severity assigned by the issuing agency.
-    That is a better signal than anything inferred from prose, so it is kept -
-    the classifier only supplies a score for transparency, and records why.
-    """
+    """Return a copy of report with priority fields populated."""
     result = classify_text(report.content)
 
     if report.source == "official" and report.priority != ReportPriority.LOW:
@@ -209,8 +160,6 @@ def classify_report(report: Report) -> Report:
     )
 
 
-# Sort key: priority bucket first, then score, then recency. Used to order the
-# reports feed so the most urgent items surface without the client sorting.
 _PRIORITY_RANK = {
     ReportPriority.CRITICAL: 0,
     ReportPriority.HIGH: 1,

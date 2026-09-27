@@ -1,23 +1,4 @@
-"""Resource data access, including the nearby-resources query.
-
-``find_nearby`` is the query the whole geospatial requirement comes down to. It
-compiles to roughly::
-
-    SELECT r.*,
-           ST_Distance(r.location, $point) / 1000.0 AS distance_km
-    FROM resources r
-    WHERE r.is_active
-      AND ST_DWithin(r.location, $point, $radius_km * 1000)   -- GiST index
-      AND (r.type = $type)                                    -- optional
-    ORDER BY ST_Distance(r.location, $point)
-    LIMIT $limit;
-
-where ``$point`` is ``ST_SetSRID(ST_MakePoint($lng, $lat), 4326)::geography``.
-
-See ``app/repositories/geo.py`` for why it is ``ST_DWithin`` and not
-``ST_Distance(...) < r`` - that choice is the difference between an index scan
-and a sequential one.
-"""
+"""Resource data access, including the nearby-resources query."""
 
 from __future__ import annotations
 
@@ -50,13 +31,7 @@ async def find_nearby(
     include_unlinked: bool = True,
     limit: int = 50,
 ) -> list[ResourceRow]:
-    """Resources within ``radius_km`` of a point, nearest first.
-
-    ``include_unlinked`` defaults to True because most useful resources are
-    standing infrastructure with no link to any particular incident. A hospital
-    two kilometres away is relevant whether or not someone remembered to
-    associate it with this disaster.
-    """
+    """Resources within radius_km of a point, nearest first."""
     distance = distance_km(Resource.location, lat, lng).label("distance_km")
 
     stmt = (
@@ -65,8 +40,6 @@ async def find_nearby(
             Resource.is_active.is_(True),
             within_radius(Resource.location, lat, lng, radius_km),
         )
-        # Sorting by the raw metre distance avoids recomputing the /1000 division
-        # per comparison; the ordering is identical either way.
         .order_by(func.ST_Distance(Resource.location, geography_point(lat, lng)).asc())
         .limit(limit)
     )

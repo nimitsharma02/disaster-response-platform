@@ -23,12 +23,7 @@ async def record(
     changes: dict[str, Any] | None = None,
     request_id: str | None = None,
 ) -> AuditLog:
-    """Append one entry.
-
-    Added to the session but not committed: the audit row must land in the same
-    transaction as the change it describes. Committing separately would allow a
-    rolled-back update to leave behind a log entry claiming it happened.
-    """
+    """Append one entry."""
     entry = AuditLog(
         entity_type=entity_type,
         entity_id=entity_id,
@@ -59,12 +54,7 @@ async def list_for_entity(
 
 
 def diff(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
-    """Build a ``{field: {from, to}}`` map of what actually changed.
-
-    Only genuinely changed fields are recorded. A PATCH that re-sends an
-    identical value should not produce an audit entry implying someone changed
-    something.
-    """
+    """Build a {field: {from, to}} map of what actually changed."""
     changes: dict[str, Any] = {}
     for key, new_value in after.items():
         old_value = before.get(key)

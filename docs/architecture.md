@@ -1,7 +1,8 @@
 # Architecture notes
 
-Supplementary detail to the README: request lifecycle, the measured query plans
-behind the geospatial claims, and the state machines that govern failure handling.
+Extra detail that did not belong in the README: the request lifecycle, the
+measured query plans behind the geospatial claims, and how failure handling
+behaves.
 
 ---
 
@@ -9,62 +10,49 @@ behind the geospatial claims, and the state machines that govern failure handlin
 
 What happens on `POST /api/v1/disasters`, end to end.
 
-```
-HTTP request
-  │
-  ├─ RequestContextMiddleware   assign/propagate X-Request-ID, start timer,
-  │                             bind request_id into the logging ContextVar
-  ├─ CORSMiddleware             origin policy
-  ├─ RateLimitMiddleware        Redis INCR on {bucket}:{ip}:{window}
-  │                             over limit → 429 problem document, short-circuit
-  ├─ SecurityHeadersMiddleware  nosniff, DENY, Referrer-Policy, CSP
-  │
-  ▼
-FastAPI routing → app/api/v1/routes/disasters.py::create_disaster
-  │
-  ├─ Pydantic validates DisasterCreate   invalid → 422 problem document
-  ├─ Depends(require_roles(ADMIN, CONTRIBUTOR))
-  │     └─ decode JWT → re-read user from DB → check is_active → check role
-  ├─ Depends(get_session)                one AsyncSession for this request
-  │
-  ▼
-app/services/disaster_service.py::create_disaster
-  │
-  ├─ coordinates supplied?  yes → source="manual", confidence=1.0
-  │                         no  → geocoding_service.resolve_from_description()
-  │                                 ├─ cache: nlp:place:{hash(description)}
-  │                                 │    └─ LLM if key set, else rule extractor
-  │                                 └─ cache: geocode:{place}
-  │                                      └─ Nominatim → gazetteer fallback
-  ├─ disaster_repo.create()      INSERT ... ST_SetSRID(ST_MakePoint(lng,lat),4326)::geography
-  ├─ audit_repo.record()         same transaction as the INSERT
-  ├─ session.commit()            ← the write becomes durable HERE
-  └─ events.publish()            ← only now; publishing earlier could announce
-                                   a change that still rolls back
-  ▼
-DisasterResponse  (201)  +  X-Request-ID, X-Response-Time-ms
-  │
-  └─ Redis pub/sub "drp:events" → every worker → WebSocket + SSE clients
-```
+1. `RequestContextMiddleware` assigns or propagates `X-Request-ID`, starts a
+   timer, and binds the request id into a `ContextVar` so every log line below
+   carries it.
+2. `CORSMiddleware` applies the origin policy.
+3. `RateLimitMiddleware` does a Redis `INCR` on a key of bucket, client IP and
+   time window. Over the limit it returns a 429 problem document and stops.
+4. `SecurityHeadersMiddleware` adds nosniff, DENY, Referrer-Policy and a CSP.
+5. FastAPI routes to `create_disaster` and Pydantic validates `DisasterCreate`.
+   Anything invalid becomes a 422 problem document.
+6. The `require_roles` dependency decodes the JWT, re-reads the user from the
+   database, checks `is_active`, then checks the role.
+7. The `get_session` dependency yields one `AsyncSession` for the request.
+8. `disaster_service.create_disaster` runs. If coordinates were supplied the
+   source is recorded as manual with confidence 1.0. Otherwise
+   `geocoding_service.resolve_from_description` is called, which caches the
+   extracted place name under `nlp:place:{hash}` and the geocoding result under
+   `geocode:{place}`.
+9. `disaster_repo.create` inserts the row with
+   `ST_SetSRID(ST_MakePoint(lng, lat), 4326)`, and `audit_repo.record` adds the
+   audit entry to the same transaction.
+10. `session.commit()` makes the write durable.
+11. `events.publish()` broadcasts to Redis pub/sub, which reaches every worker
+    and from there every WebSocket and SSE client.
+12. The response is a 201 with `X-Request-ID` and `X-Response-Time-ms`.
 
-Two orderings in that flow are deliberate and worth stating:
+Two orderings in that flow are deliberate.
 
-1. **Commit before publish.** A client receiving `disaster_created` and
-   immediately issuing a `GET` must not get a 404.
-2. **Breaker outside retry** (in the integration clients). A run of three retries
-   against a dead provider counts as *one* failure against the breaker, not
-   three — otherwise a single request would trip a 5-failure breaker on its own.
+The commit happens before the publish. A client that receives `disaster_created`
+and immediately issues a GET must not get a 404.
+
+The circuit breaker sits outside the retry loop in the integration clients, so a
+run of three retries against a dead provider counts as one failure against the
+breaker rather than three. Inverted, a single request would burn three of a five
+failure budget and trip the breaker almost immediately.
 
 ---
 
 ## 2. Measured query plans
 
-Run against this schema with **200,000 resources**, PostgreSQL 16 + PostGIS 3.4.
-Both queries return identical rows.
+Run against this schema with 200,000 resources on PostgreSQL 16 with PostGIS 3.4.
+Both queries return identical rows. The SQL to reproduce it is in section 2.3.
 
-Reproduce with the SQL in [§2.3](#23-reproducing-the-benchmark).
-
-### 2.1 `ST_DWithin` — the query the application issues
+### 2.1 ST_DWithin, the query the application issues
 
 ```sql
 EXPLAIN (ANALYZE, BUFFERS, COSTS OFF)
@@ -80,30 +68,30 @@ LIMIT 50;
 ```
  Limit (actual time=6.376..6.386 rows=50 loops=1)
    Buffers: shared hit=257
-   ->  Sort (actual time=6.373..6.376 rows=50 loops=1)
-         Sort Method: quicksort  Memory: 37kB
-         ->  Bitmap Heap Scan on resources (actual time=5.893..6.332 rows=95 loops=1)
-               Filter: (is_active AND st_dwithin(location, '...'::geography, '5000'::double precision, true))
-               Rows Removed by Filter: 77
-               Heap Blocks: exact=161
-               ->  Bitmap Index Scan on ix_resources_location (actual time=0.151..0.151 rows=172 loops=1)
-                     Index Cond: (location && _st_expand('...'::geography, '5000'::double precision))
-                     Buffers: shared hit=24
+   Sort (actual time=6.373..6.376 rows=50 loops=1)
+     Sort Method: quicksort  Memory: 37kB
+     Bitmap Heap Scan on resources (actual time=5.893..6.332 rows=95 loops=1)
+       Filter: (is_active AND st_dwithin(location, '...'::geography, '5000'::double precision, true))
+       Rows Removed by Filter: 77
+       Heap Blocks: exact=161
+       Bitmap Index Scan on ix_resources_location (actual time=0.151..0.151 rows=172 loops=1)
+         Index Cond: (location && _st_expand('...'::geography, '5000'::double precision))
+         Buffers: shared hit=24
  Planning Time: 1.053 ms
  Execution Time: 6.473 ms
 ```
 
-The line that matters is the `Index Cond`:
+The line that matters is the index condition,
+`location && _ST_Expand(point, 5000)`. The planner rewrote `ST_DWithin` into a
+bounding box overlap that the GiST index can answer. It read 172 candidate rows
+out of 200,000, then applied the exact spheroid distance to only those,
+discarding 77 and keeping 95.
 
-```
-location && _ST_Expand(point, 5000)
-```
+Those 77 discarded rows are worth noticing, because they are the proof that the
+filter and refine split is happening. A bounding box is a square and the radius
+is a circle, so the corners produce false positives that the exact phase removes.
 
-The planner rewrote `ST_DWithin` into a **bounding-box overlap** (`&&`) that the
-GiST index can answer. It read 172 candidate rows out of 200,000, then applied
-the exact spheroid distance to just those — discarding 77 and keeping 95.
-
-### 2.2 `ST_Distance(...) < r` — the naive equivalent
+### 2.2 ST_Distance < r, the naive equivalent
 
 ```sql
 WHERE is_active
@@ -113,33 +101,31 @@ WHERE is_active
 ```
  Limit (actual time=276.982..286.235 rows=50 loops=1)
    Buffers: shared hit=3948
-   ->  Gather Merge (actual time=209.399..218.648 rows=50 loops=1)
-         Workers Planned: 2
-         Workers Launched: 2
-         ->  Sort (actual time=190.753..190.755 rows=22 loops=3)
-               ->  Parallel Seq Scan on resources (actual time=82.102..190.602 rows=32 loops=3)
-                     Filter: (is_active AND (st_distance(location, '...'::geography, true) < '5000'::double precision))
-                     Rows Removed by Filter: 66646
-                     Buffers: shared hit=3874
+   Gather Merge (actual time=209.399..218.648 rows=50 loops=1)
+     Workers Planned: 2
+     Workers Launched: 2
+     Sort (actual time=190.753..190.755 rows=22 loops=3)
+       Parallel Seq Scan on resources (actual time=82.102..190.602 rows=32 loops=3)
+         Filter: (is_active AND (st_distance(location, '...'::geography, true) < '5000'::double precision))
+         Rows Removed by Filter: 66646
+         Buffers: shared hit=3874
  Planning Time: 0.105 ms
  Execution Time: 311.923 ms
 ```
 
-**Parallel Seq Scan.** `ST_Distance` must be evaluated for every row before the
-`<` comparison can be made, so the index is unusable. Postgres threw two extra
-worker processes at it and it was still ~48× slower.
+A Parallel Seq Scan. `ST_Distance` has to be evaluated for every row before the
+comparison can be made, so the index is unusable. Postgres threw two extra worker
+processes at it and it was still around 48 times slower.
 
-### Summary
+To summarise the two:
 
-| | `ST_DWithin` | `ST_Distance < r` |
-|---|---|---|
-| Plan | Bitmap Index Scan → Bitmap Heap Scan | Parallel Seq Scan (2 workers) |
-| Rows examined | 172 | 200,000 |
-| Buffers | 257 | 3,948 |
-| Execution | **6.47 ms** | **311.92 ms** |
+- `ST_DWithin` uses a Bitmap Index Scan into a Bitmap Heap Scan, examines 172
+  rows, reads 257 buffers and takes 6.47 ms
+- `ST_Distance < r` uses a Parallel Seq Scan with two workers, examines 200,000
+  rows, reads 3,948 buffers and takes 311.92 ms
 
-Same results. **~48× faster, 15× fewer buffer reads.** This is the single clearest
-argument for the `ST_DWithin` + GiST design.
+Same results, roughly 48 times faster and 15 times fewer buffer reads. This is
+the clearest argument for the `ST_DWithin` plus GiST design.
 
 ### 2.3 Reproducing the benchmark
 
@@ -157,7 +143,7 @@ SELECT 'benchmark_' || g,
 FROM generate_series(1, 200000) g;
 
 ANALYZE resources;
--- ... run both EXPLAIN statements above ...
+-- run both EXPLAIN statements above
 
 DELETE FROM resources WHERE name LIKE 'benchmark\_%';
 ANALYZE resources;
@@ -166,146 +152,135 @@ ANALYZE resources;
 ### 2.4 Tag filtering
 
 `?tag=flood` compiles to `tags @> ARRAY['flood']`, served by the GIN index
-`ix_disasters_tags`. GIN builds an inverted index — one posting list per distinct
-tag pointing at the rows carrying it — so this is a lookup rather than a scan
-over every row's array.
+`ix_disasters_tags`. GIN builds an inverted index, one posting list per distinct
+tag pointing at the rows carrying it, so this is a lookup rather than a scan over
+every row's array.
 
-Note that `'flood' = ANY(tags)` would *not* use that index. The containment
+Worth knowing: `'flood' = ANY(tags)` would not use that index. The containment
 operator is what makes it work.
 
 ---
 
-## 3. Cache state machine
+## 3. How the cache behaves
 
-```
-                        ┌──────────────────┐
-              ┌────────►│  L1 (in-process) │──hit──► return  X-Cache: HIT
-              │         └────────┬─────────┘
-              │                  │ miss
-   request ───┤                  ▼
-              │         ┌──────────────────┐
-              │         │   L2 (Redis)     │
-              │         │ {value,fetched_at│
-              │         │  ,ttl}           │
-              │         └────────┬─────────┘
-              │          age<ttl │  age>=ttl (soft-expired) or absent
-              │      ┌───────────┘         │
-              │      ▼                     ▼
-              │   return            ┌─────────────────┐
-              │   X-Cache: HIT      │ SET NX lock     │
-              │                     └────┬───────┬────┘
-              │                      won │       │ lost
-              │                          ▼       ▼
-              │                   call origin   stale available?
-              │                    │      │      ├─ yes → return  X-Cache: STALE
-              │                 ok │      │ fail └─ no  → poll ≤2s for the winner
-              │                    ▼      ▼               (then self-serve)
-              └──────────── store+return  stale available?
-                            X-Cache: MISS  ├─ yes → X-Cache: STALE, degraded:true
-                                           └─ no  → 502 upstream_unavailable
-```
+A read goes through these steps.
 
-Key sizes and lifetimes live in `.env.example`; the reasoning for each TTL is in
-the README.
+1. Check the in process L1 dict. A hit returns immediately as `X-Cache: HIT`.
+2. Check Redis. If the stored entry is younger than its TTL it is returned, also
+   as a hit.
+3. Otherwise the entry is missing or soft expired, and the caller tries to take
+   an atomic `SET NX EX` lock.
+4. Whoever wins the lock calls the origin. On success the value is stored and
+   returned as `X-Cache: MISS`. On failure, stale data is served as
+   `X-Cache: STALE` with `degraded: true`, or a 502 if nothing is cached at all.
+5. Callers that lose the lock serve stale data if there is any, and otherwise
+   poll for up to two seconds for the winner's result before fetching themselves.
 
-The Redis key's own expiry is `ttl + stale_grace`, which is what creates the
-window in which stale data remains available after the soft expiry has passed.
+The Redis key's own expiry is the TTL plus the stale grace period, which is what
+creates the window in which stale data remains available after the soft expiry
+has passed. Key sizes and lifetimes live in `.env.example`, and the reasoning
+behind each TTL is in the README.
 
 ---
 
-## 4. Circuit breaker state machine
+## 4. How the circuit breaker behaves
 
-One breaker per provider (`nominatim`, `anthropic`, `mock-social-api`,
+There is one breaker per provider (`nominatim`, `anthropic`, `mock-social-api`,
 `mock-official-api`), per process.
 
-```
-         ┌─────────────────────────────────────────────┐
-         │                                             │
-         ▼                                             │
-    ┌─────────┐   5 consecutive failures      ┌────────┴──┐
-    │ CLOSED  │ ────────────────────────────► │   OPEN    │
-    │ calls   │                               │ fail fast │
-    │ pass    │ ◄──────────────────────────── │ no call   │
-    └─────────┘        trial succeeds         └────┬──────┘
-         ▲                                         │ 30s elapsed
-         │                                         ▼
-         │                                  ┌─────────────┐
-         └───────── success ──────────────  │  HALF_OPEN  │
-                                            │ ONE trial   │
-                     trial fails ─────────► │ call only   │
-                     (timer restarts)       └─────────────┘
-```
+It starts closed and calls pass through. After five consecutive failures it opens
+and rejects calls immediately without attempting them. Thirty seconds later it
+moves to half open and allows exactly one trial call. If that succeeds it closes,
+and if it fails it reopens and the timer restarts.
 
-Properties that are easy to get wrong and are tested in
+Four properties are easy to get wrong, and are tested in
 `tests/test_cache_and_resilience.py`:
 
-- **Consecutive**, not cumulative: any success resets the counter, so isolated
-  blips never accumulate toward tripping.
-- **Half-open admits exactly one probe.** Letting full load through the moment the
-  timer expires would re-flatten a service that is still fragile.
-- **`PermanentError` (4xx) never counts.** A 400 means *our request* was wrong,
-  not that the dependency is down; counting it would trip the breaker on our own
-  bad input.
-- **State is read lazily.** `OPEN → HALF_OPEN` happens on the next read of
-  `.state`, so no background timer task is needed.
+- It counts consecutive failures, not cumulative ones. Any success resets the
+  counter, so isolated blips never accumulate towards tripping it.
+- Half open admits exactly one probe. Letting full load through the moment the
+  timer expires would flatten a service that is still fragile.
+- A `PermanentError`, meaning a 4xx, never counts. That means our request was
+  wrong, not that the dependency is down, and counting it would trip the breaker
+  on our own bad input.
+- State is read lazily, so the transition from open to half open happens on the
+  next read of `.state` and there is no background timer task to manage.
 
 Live state is exposed at `GET /api/v1/health/ready` under
 `checks.external_providers`, which makes "which provider are we currently
-skipping, and why?" answerable at a glance.
+skipping, and why" answerable at a glance.
 
 ---
 
 ## 5. Concurrency model
 
-Everything is async, on one event loop per worker. The two places that matter:
+Everything is async, on one event loop per worker. Two places matter.
 
-**Providers are fetched concurrently.**
+Providers are fetched concurrently:
 
 ```python
 results = await asyncio.gather(social_task, official_task, return_exceptions=True)
 ```
 
-Latency is that of the slowest provider, not the sum. `return_exceptions=True` is
-not optional here: without it, the first failure cancels the sibling task and a
-*working* provider's data is thrown away along with it.
+Latency is that of the slowest provider rather than the sum of both.
+`return_exceptions=True` is not optional here. Without it the first failure
+cancels the sibling task and a working provider's data is thrown away with it.
 
-**Blocking work is kept off the loop.** Argon2 hashing is CPU-bound and takes
-tens of milliseconds, which is why it happens only on login and never on a hot
-path. There is no synchronous I/O anywhere in a request path — the database
-driver (`asyncpg`), the HTTP client (`httpx`), and the Redis client are all async.
+Blocking work is kept off the loop. Argon2 hashing is CPU bound and takes tens of
+milliseconds, which is why it happens only on login and never on a hot path.
+There is no synchronous I/O anywhere in a request path, since asyncpg, httpx and
+the Redis client are all async.
 
 ---
 
 ## 6. Failure modes and expected behaviour
 
-| What fails | Behaviour | Status |
-|---|---|---|
-| Redis unreachable at boot | Falls back to in-process cache + event bus; logged loudly; readiness reports `degraded` | 200 |
-| Redis unreachable mid-request (rate limiter) | Fails **open** — a limiter that takes the API down has caused a worse outage than the one it prevents | 200 |
-| Nominatim 403 / timeout | Falls back to the bundled gazetteer; `location_source` records which was used | 201 |
-| No `ANTHROPIC_API_KEY` | LLM path never attempted; rule-based extractor used | 201 |
-| Nothing resolvable from the description | Incident created with `location.point = null`, `source = "unresolved"` | 201 |
-| One report provider down | Other provider's reports returned, `degraded: true`, partial result cached 60s | 200 |
-| Both report providers down, cache warm | Stale payload served, `X-Cache: STALE`, `sources` from live breaker state | 200 |
-| Both report providers down, cache cold | The one genuine failure case | 502 |
-| Provider returns a 200 with a malformed body | Treated as `PermanentError` (a contract break, not a blip); not retried | 502 |
-| A single malformed item inside a valid payload | That item is dropped and counted; the rest are served | 200 |
-| PostgreSQL unreachable | Readiness fails so the instance is pulled from rotation | 503 |
-| arq worker not running | Caches simply fill on demand via the normal miss path | 200 |
+- Redis unreachable at boot: falls back to the in process cache and event bus,
+  logs it loudly, and readiness reports degraded. Still returns 200.
+- Redis unreachable mid request in the rate limiter: fails open, because a
+  limiter that takes the API down has caused a worse outage than the one it was
+  preventing. Still returns 200.
+- Nominatim returns 403 or times out: falls back to the bundled gazetteer, and
+  `location_source` records which path was used. Still returns 201.
+- No `ANTHROPIC_API_KEY`: the LLM path is never attempted and the rule based
+  extractor is used. Still returns 201.
+- Nothing resolvable from the description: the incident is created with
+  `location.point` null and the source recorded as unresolved. Still returns 201.
+- One report provider down: the other provider's reports are returned with
+  `degraded: true`, and the partial result is cached for only 60 seconds so
+  recovery is picked up quickly. Returns 200.
+- Both report providers down with a warm cache: the stale payload is served with
+  `X-Cache: STALE` and `sources` taken from live breaker state. Returns 200.
+- Both report providers down with a cold cache: the one genuine failure case.
+  Returns 502.
+- A provider returns a 200 with a malformed body: treated as a permanent error,
+  since it is a contract break rather than a blip, and is not retried. Returns
+  502.
+- A single malformed item inside an otherwise valid payload: that item is dropped
+  and counted, and the rest are served. Returns 200.
+- PostgreSQL unreachable: readiness fails so the instance is pulled out of
+  rotation. Returns 503.
+- The arq worker is not running: caches simply fill on demand through the normal
+  miss path. Returns 200.
 
 ---
 
-## 7. What would change at 100× scale
+## 7. What would change at 100x scale
 
 Honest notes rather than premature optimisation.
 
-| Pressure | Change |
-|---|---|
-| Deep pagination | Keyset/cursor pagination instead of `OFFSET` |
-| Breaker inconsistency across workers | Share breaker state in Redis |
-| Rate-limit burst at window boundaries | Sliding window or token bucket |
-| Report volume | Paginate the feed; persist reports and index them |
-| Geospatial write volume | Partition `resources` by region; consider a coarser `ST_SnapToGrid` cache key for repeated nearby queries |
-| Search quality | `tsvector` + `ts_rank` instead of trigram `ILIKE` |
-| Operational blindness | Prometheus metrics + OpenTelemetry tracing (`request_id` already threads through everything) |
-| Event delivery guarantees | Redis Streams with consumer groups instead of fire-and-forget pub/sub |
+- Deep pagination would move from `OFFSET` to keyset or cursor pagination.
+- Breaker inconsistency across workers would be solved by sharing breaker state
+  in Redis.
+- Rate limit bursts at window boundaries would need a sliding window or a token
+  bucket.
+- Report volume would need the feed paginated, and reports persisted and indexed.
+- Geospatial write volume would suggest partitioning `resources` by region, and
+  possibly a coarser `ST_SnapToGrid` cache key so repeated nearby queries share
+  an entry.
+- Search quality would move from trigram ILIKE to `tsvector` with `ts_rank`.
+- Operational blindness would be addressed with Prometheus metrics and
+  OpenTelemetry tracing. `request_id` already threads through everything, so
+  traces would slot in cleanly.
+- Event delivery guarantees would move from fire and forget pub/sub to Redis
+  Streams with consumer groups.

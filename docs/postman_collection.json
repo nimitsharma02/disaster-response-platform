@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Disaster Response Coordination Platform",
-    "description": "Run the requests in order. **1. Authentication \u2192 Login as admin** stores the JWT in a collection variable, so every later request is authorised automatically. **2. Disasters \u2192 Create** stores the new id as `disasterId`.\n\nSet `baseUrl` to `http://localhost:8000/api/v1` (the default).",
+    "description": "Run the requests in order. **1. Authentication -> Login as admin** stores the JWT in a collection variable, so every later request is authorised automatically. **2. Disasters -> Create** stores the new id as `disasterId`.\n\nSet `baseUrl` to `http://localhost:8000/api/v1` (the default).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [

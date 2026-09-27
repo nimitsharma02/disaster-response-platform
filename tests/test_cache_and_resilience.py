@@ -1,9 +1,4 @@
-"""Unit tests for the cache layer and the resilience primitives.
-
-These are deliberately unit tests with no HTTP and no database: they exercise
-the mechanisms directly, so a failure points at the mechanism rather than at
-whichever endpoint happened to use it.
-"""
+"""Unit tests for the cache layer and the resilience primitives."""
 
 from __future__ import annotations
 
@@ -25,9 +20,7 @@ from app.integrations.resilience import (
 pytestmark = pytest.mark.asyncio
 
 
-# --------------------------------------------------------------------------- #
 # Cache
-# --------------------------------------------------------------------------- #
 
 
 async def test_loader_runs_once_then_serves_from_cache():
@@ -66,7 +59,7 @@ async def test_force_refresh_bypasses_the_cache():
 
 
 async def test_soft_expiry_makes_a_value_stale_but_reusable():
-    """Past ``ttl`` the value is stale; within ``stale_grace`` it can still be served."""
+    """Past ttl the value is stale; within stale_grace it can still be served."""
     async def loader() -> str:
         return "original"
 
@@ -95,11 +88,7 @@ async def test_origin_failure_with_a_cold_cache_raises_upstream_error():
 
 
 async def test_single_flight_collapses_a_concurrent_stampede():
-    """Twenty concurrent callers on a cold key must produce one origin call.
-
-    Without the ``SET NX`` lock, all twenty would miss simultaneously and hit the
-    origin at once - precisely when it is least able to cope.
-    """
+    """Twenty concurrent callers on a cold key must produce one origin call."""
     calls = {"n": 0}
 
     async def slow_loader() -> int:
@@ -136,7 +125,6 @@ async def test_keys_are_namespaced_and_long_inputs_are_hashed():
     long_key = cache.make_key("nlp:place", "x" * 500)
     assert len(long_key) < 120, "an over-long component must be hashed"
 
-    # Identical input must still produce an identical key.
     assert cache.make_key("nlp:place", "x" * 500) == long_key
 
 
@@ -157,9 +145,7 @@ async def test_a_corrupt_cache_entry_is_treated_as_a_miss():
     assert result.value == "recovered"
 
 
-# --------------------------------------------------------------------------- #
 # Retry
-# --------------------------------------------------------------------------- #
 
 
 async def test_retry_succeeds_after_a_transient_failure():
@@ -204,9 +190,7 @@ async def test_permanent_errors_are_never_retried():
     assert attempts["n"] == 1
 
 
-# --------------------------------------------------------------------------- #
 # Circuit breaker
-# --------------------------------------------------------------------------- #
 
 
 async def test_breaker_opens_after_the_failure_threshold():
@@ -221,7 +205,6 @@ async def test_breaker_opens_after_the_failure_threshold():
 
     assert breaker.state is CircuitState.OPEN
 
-    # Now it fails fast, without attempting the call.
     calls = {"n": 0}
 
     async def should_not_run() -> None:
@@ -311,9 +294,7 @@ async def test_permanent_errors_do_not_trip_the_breaker():
     assert breaker.state is CircuitState.CLOSED
 
 
-# --------------------------------------------------------------------------- #
 # Rate limiter
-# --------------------------------------------------------------------------- #
 
 
 async def test_rate_limiter_paces_calls():
@@ -325,5 +306,4 @@ async def test_rate_limiter_paces_calls():
         await limiter.acquire()
     elapsed = asyncio.get_event_loop().time() - started
 
-    # One immediate (the burst token) plus three paced at 1/20s each.
     assert elapsed >= 0.12, f"expected pacing, took only {elapsed:.3f}s"

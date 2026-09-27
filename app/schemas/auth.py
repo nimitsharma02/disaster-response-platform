@@ -17,9 +17,6 @@ class LoginRequest(BaseModel):
     )
 
     username: str = Field(min_length=3, max_length=64)
-    # No max_length that would truncate a passphrase, and no complexity rules:
-    # Argon2 handles any input, and arbitrary composition rules mostly push users
-    # toward weaker, more predictable passwords.
     password: str = Field(min_length=6, max_length=256)
 
 
@@ -31,12 +28,7 @@ class TokenResponse(BaseModel):
 
 
 class UserPublic(ORMModel):
-    """The only user representation that ever leaves the service.
-
-    ``password_hash`` is absent by construction rather than stripped on the way
-    out - a field that does not exist on the response model cannot be leaked by
-    a future careless change.
-    """
+    """The only user representation that ever leaves the service."""
 
     id: uuid.UUID
     username: str
@@ -58,5 +50,4 @@ class AuthenticatedUser(BaseModel):
         return self.role == UserRole.ADMIN
 
 
-# Resolve the forward reference used in TokenResponse.
 TokenResponse.model_rebuild()

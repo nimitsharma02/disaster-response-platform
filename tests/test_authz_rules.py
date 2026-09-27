@@ -1,14 +1,4 @@
-"""Authorization tests - the business rule the brief asks to be demonstrated.
-
-Two distinct mechanisms are verified, because they fail in different ways:
-
-* **Role gate** (route dependency): can this *kind* of user call this endpoint?
-* **Ownership check** (service layer): may this *specific* user touch this
-  *specific* record?
-
-A system with only the first is the common bug: every contributor can edit every
-other contributor's records.
-"""
+"""Authorization tests, the business rule the brief asks to be."""
 
 from __future__ import annotations
 
@@ -31,9 +21,7 @@ async def _create(client, headers, title: str = "Owned Incident") -> str:
     return response.json()["id"]
 
 
-# --------------------------------------------------------------------------- #
 # The headline rule
-# --------------------------------------------------------------------------- #
 
 
 async def test_contributor_can_update_their_own_disaster(client, contributor_headers):
@@ -52,12 +40,7 @@ async def test_contributor_can_update_their_own_disaster(client, contributor_hea
 async def test_contributor_cannot_update_someone_elses_disaster(
     client, contributor_headers, other_contributor_headers
 ):
-    """The core ownership rule.
-
-    Both users hold the same role and both pass the route's role gate. Only a
-    record-level check can tell them apart, which is exactly why that check
-    lives in the service layer where the record has been loaded.
-    """
+    """The core ownership rule."""
     disaster_id = await _create(client, contributor_headers, "Belongs To First Contributor")
 
     response = await client.patch(
@@ -71,14 +54,12 @@ async def test_contributor_cannot_update_someone_elses_disaster(
     assert body["code"] == "forbidden"
     assert "only modify disasters you created" in body["detail"]
 
-    # And the record must actually be unchanged - a 403 that still wrote would
-    # be far worse than no check at all.
     after = await client.get(f"/api/v1/disasters/{disaster_id}")
     assert after.json()["status"] == "reported"
 
 
 async def test_admin_can_update_any_disaster(client, contributor_headers, admin_headers):
-    """Admin bypasses the ownership check - the other half of the same rule."""
+    """Admin bypasses the ownership check, the other half of the same rule."""
     disaster_id = await _create(client, contributor_headers, "Created By Contributor")
 
     response = await client.patch(
@@ -91,17 +72,11 @@ async def test_admin_can_update_any_disaster(client, contributor_headers, admin_
     assert response.json()["status"] == "in_progress"
 
 
-# --------------------------------------------------------------------------- #
 # Role gates
-# --------------------------------------------------------------------------- #
 
 
 async def test_only_admin_may_delete(client, contributor_headers, admin_headers):
-    """Delete is admin-only, even for the record's own creator.
-
-    Deleting destroys shared situational awareness in a way editing does not, so
-    it is deliberately narrower than update.
-    """
+    """Delete is admin-only, even for the record's own creator."""
     disaster_id = await _create(client, contributor_headers, "To Be Deleted")
 
     denied = await client.delete(f"/api/v1/disasters/{disaster_id}", headers=contributor_headers)
@@ -155,12 +130,7 @@ async def test_resource_creation_is_admin_only(client, contributor_headers, admi
 async def test_deactivated_user_is_rejected_despite_valid_token(
     client, session, contributor_user, contributor_headers
 ):
-    """Deactivation takes effect immediately, not when the token expires.
-
-    This is why the request pipeline re-reads the user from the database instead
-    of trusting the role claim inside the JWT.
-    """
-    # Token minted while active, so it is cryptographically valid.
+    """Deactivation takes effect immediately, not when the token expires."""
     contributor_user.is_active = False
     await session.flush()
 
@@ -237,15 +207,11 @@ async def test_login_returns_token_and_public_user(client, contributor_user):
     assert body["access_token"]
     assert body["user"]["username"] == "test_contributor"
     assert body["user"]["role"] == "contributor"
-    # The hash must never appear in a response body.
     assert "password_hash" not in body["user"]
 
 
 async def test_login_failure_does_not_reveal_whether_the_user_exists(client, contributor_user):
-    """Identical response for a wrong password and an unknown username.
-
-    Differentiating them turns the login endpoint into a username oracle.
-    """
+    """Identical response for a wrong password and an unknown username."""
     wrong_password = await client.post(
         "/api/v1/auth/login",
         json={"username": "test_contributor", "password": "wrong-password"},

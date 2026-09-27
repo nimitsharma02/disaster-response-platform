@@ -1,8 +1,4 @@
-"""Priority classifier and location-extraction tests.
-
-Both are pure functions, so these are fast unit tests with no I/O at all. That is
-the main argument for making them rule-based: they can be pinned down exactly.
-"""
+"""Priority classifier and location-extraction tests."""
 
 from __future__ import annotations
 
@@ -12,9 +8,7 @@ from app.db.models.enums import ReportPriority
 from app.integrations import gazetteer
 from app.services.classification import classify_text
 
-# --------------------------------------------------------------------------- #
 # Priority classification
-# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.parametrize(
@@ -59,11 +53,7 @@ def test_classification_is_deterministic():
 
 
 def test_every_score_is_explainable():
-    """``matched_signals`` must name the rules that fired.
-
-    An unexplained score that reorders rescue requests is worse than no score,
-    so this is a hard requirement rather than a nicety.
-    """
+    """matched_signals must name the rules that fired."""
     result = classify_text("URGENT: child trapped, we need water and medical help")
 
     assert result.signals, "a scored report must say why it scored"
@@ -89,12 +79,7 @@ def test_vulnerable_group_raises_an_otherwise_identical_report():
 
 
 def test_overlapping_signals_are_not_double_counted():
-    """Regression test for a real defect found while tuning.
-
-    "baby formula" matched the urgent-need lexicon AND the vulnerable-group
-    regex on the same word, inflating an ordinary supply request into the
-    critical bucket. Signals that overlap in the text must be counted once.
-    """
+    """Regression test for a real defect found while tuning."""
     result = classify_text("Baby formula and diapers urgently needed at the relief centre")
 
     assert result.priority == ReportPriority.HIGH, (
@@ -125,9 +110,7 @@ def test_score_is_clamped_to_the_unit_interval():
     assert result.priority == ReportPriority.CRITICAL
 
 
-# --------------------------------------------------------------------------- #
 # Location extraction
-# --------------------------------------------------------------------------- #
 
 
 def test_the_example_from_the_brief():
@@ -174,19 +157,12 @@ def test_unknown_place_with_a_locative_cue_scores_lower_but_is_still_returned():
 
     assert result.place is not None
     assert "Sylhet" in result.place
-    # Cue present but no gazetteer match: mid confidence, not high.
     assert 0.4 <= result.confidence < 0.8
     assert gazetteer.lookup(result.place) is None
 
 
 def test_extraction_stops_at_a_sentence_boundary():
-    """Regression test for a defect caught while seeding.
-
-    The token pattern allows an internal '.' so that "St. Louis" stays intact,
-    which let a match run past the end of a sentence: "...a warehouse in
-    Brooklyn. Smoke is drifting..." produced the candidate "Brooklyn. Smoke",
-    which then failed to geocode.
-    """
+    """Regression test for a defect caught while seeding."""
     result = gazetteer.extract_place(
         "A large fire has broken out at a warehouse in Brooklyn. "
         "Smoke is drifting across nearby residential blocks."

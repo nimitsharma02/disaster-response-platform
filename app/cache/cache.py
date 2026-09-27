@@ -1,41 +1,4 @@
-"""Two-tier cache with stale-while-revalidate and single-flight.
-
-    request
-       |
-       v
-    L1  in-process dict (CACHE_L1_TTL, ~30s)  --hit--> return  (X-Cache: HIT)
-       | miss
-       v
-    L2  Redis envelope                        --fresh-> return  (X-Cache: HIT)
-       | miss or soft-expired
-       v
-    single-flight lock (SET NX)
-       |  won                       |  lost
-       v                            v
-    call origin                 serve stale if we have it,
-       |  ok      |  failed     else wait briefly for the winner
-       v          v
-    store+return  serve stale (X-Cache: STALE, degraded=true)
-                  or raise UpstreamError if nothing cached
-
-Three ideas are doing the real work here:
-
-**Soft vs hard expiry.** The envelope records when it was fetched. ``ttl`` is the
-*soft* expiry - past it the value is stale but still usable. The Redis key itself
-lives for ``ttl + stale_grace``. So when the origin is down we can answer from
-stale data and flag ``degraded: true`` instead of returning a 502. For disaster
-reports, five-minute-old data is enormously more useful than an error.
-
-**Single-flight.** On a cold key, N concurrent requests would otherwise all call
-the origin at once (a cache stampede) - exactly when the origin is least able to
-cope. One caller wins an atomic ``SET NX`` lock and fetches; the rest serve stale
-or wait for the winner.
-
-**L1.** The in-process tier is not really about Redis latency; it collapses the
-burst of identical calls a single page render produces into one Redis round-trip.
-It is per-worker and short-lived, so cross-worker inconsistency is bounded by
-``CACHE_L1_TTL``.
-"""
+"""Two-tier cache with stale-while-revalidate and single-flight."""
 
 from __future__ import annotations
 
@@ -59,8 +22,8 @@ T = TypeVar("T")
 
 CacheStatus = Literal["HIT", "MISS", "STALE", "BYPASS"]
 
-_LOCK_TTL = 10           # seconds a refresh may hold the single-flight lock
-_LOCK_WAIT_TOTAL = 2.0   # how long a loser waits for the winner before self-serving
+_LOCK_TTL = 10
+_LOCK_WAIT_TOTAL = 2.0
 _LOCK_POLL = 0.05
 
 
@@ -78,9 +41,7 @@ class CacheResult(Generic[T]):
         return self.status == "STALE"
 
 
-# --------------------------------------------------------------------------- #
 # L1
-# --------------------------------------------------------------------------- #
 
 _l1: dict[str, tuple[Any, float]] = {}
 _L1_MAX = 2_000
@@ -105,7 +66,7 @@ def _l1_set(key: str, value: Any, ttl: int) -> None:
         for k in [k for k, (_, exp) in _l1.items() if exp <= now]:
             _l1.pop(k, None)
         if len(_l1) >= _L1_MAX:
-            _l1.clear()  # fallback: an L1 flush costs one extra Redis read, nothing more
+            _l1.clear()
     _l1[key] = (value, time.monotonic() + ttl)
 
 
@@ -114,21 +75,15 @@ def _l1_drop(key: str) -> None:
 
 
 def clear_l1() -> None:
-    """Test hook - the L1 tier is module state and must not leak across tests."""
+    """Test hook, the L1 tier is module state and must not leak across tests."""
     _l1.clear()
 
 
-# --------------------------------------------------------------------------- #
 # Keys and envelopes
-# --------------------------------------------------------------------------- #
 
 
 def make_key(namespace: str, *parts: Any) -> str:
-    """Build a namespaced key.
-
-    Long or user-supplied parts are hashed so a key can never blow past Redis
-    limits or smuggle in a delimiter and collide with a different namespace.
-    """
+    """Build a namespaced key."""
     rendered: list[str] = []
     for part in parts:
         text = str(part).strip().lower()
@@ -143,18 +98,15 @@ def _pack(value: Any, ttl: int) -> str:
 
 
 def _unpack(raw: str) -> tuple[Any, float, int] | None:
-    """Return ``(value, age_seconds, soft_ttl)`` or None if the entry is unreadable."""
+    """Return (value, age_seconds, soft_ttl) or None if the entry is unreadable."""
     try:
         envelope = json.loads(raw)
         return envelope["v"], max(0.0, time.time() - float(envelope["t"])), int(envelope["ttl"])
     except (ValueError, KeyError, TypeError):
-        # A corrupt or legacy entry is treated as a miss rather than an error.
         return None
 
 
-# --------------------------------------------------------------------------- #
 # Public API
-# --------------------------------------------------------------------------- #
 
 
 async def get_or_set(
@@ -166,11 +118,7 @@ async def get_or_set(
     l1_ttl: int | None = None,
     force_refresh: bool = False,
 ) -> CacheResult[T]:
-    """Read ``key``, calling ``loader`` only when necessary.
-
-    ``loader`` is an async callable with no arguments (close over what it needs).
-    It is called at most once per key per refresh cycle across all workers.
-    """
+    """Read key, calling loader only when necessary."""
     backend = get_backend()
     grace = settings.cache_stale_grace if stale_grace is None else stale_grace
     l1_seconds = settings.cache_l1_ttl if l1_ttl is None else l1_ttl
@@ -190,7 +138,6 @@ async def get_or_set(
                 _l1_set(key, value, min(l1_seconds, max(1, int(soft_ttl - age))))
                 return CacheResult(value=value, status="HIT", age_seconds=age)
 
-    # Miss or stale: exactly one caller should hit the origin.
     lock_key = f"{key}:lock"
     have_lock = await backend.acquire_lock(lock_key, _LOCK_TTL)
 
@@ -203,8 +150,6 @@ async def get_or_set(
         refreshed = await _await_winner(key, l1_seconds)
         if refreshed is not None:
             return refreshed
-        # The winner died or is too slow. Fetching ourselves is a bounded
-        # duplicate call, which beats failing the request.
         have_lock = False
 
     try:
@@ -218,7 +163,6 @@ async def get_or_set(
         )
         return CacheResult(value=value, status="MISS", age_seconds=0.0)
     except Exception as exc:
-        # The origin failed. This is the whole point of the stale window.
         stale = await _read_stale(key)
         if stale is not None:
             value, age = stale
@@ -290,11 +234,7 @@ async def set(key: str, value: Any, *, ttl: int, stale_grace: int | None = None)
 
 
 async def invalidate(*keys: str) -> int:
-    """Drop specific keys.
-
-    Targeted invalidation, never a flush: a flush would also evict the geocoding
-    cache, whose entries cost a rate-limited external call to rebuild.
-    """
+    """Drop specific keys."""
     for key in keys:
         _l1_drop(key)
     return await get_backend().delete(*keys)

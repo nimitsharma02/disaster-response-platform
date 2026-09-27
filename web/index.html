@@ -85,7 +85,7 @@
   <h1>Disaster Response</h1>
   <div class="sub">
     <span id="wsDot" class="status-dot"></span><span id="wsText">connecting…</span>
-    &nbsp;·&nbsp; <a href="/docs" style="color:var(--accent)">API docs</a>
+    &nbsp;|&nbsp; <a href="/docs" style="color:var(--accent)">API docs</a>
   </div>
 
   <h2>Incidents</h2>
@@ -207,7 +207,7 @@ function renderDisasters() {
          style="${d.id === selectedId ? "border-color:var(--accent)" : ""}">
       <div class="title">${escapeHtml(d.title)}</div>
       <div class="meta">
-        ${escapeHtml(d.location.name || "location unresolved")} · ${d.status}
+        ${escapeHtml(d.location.name || "location unresolved")} - ${d.status}
         ${d.tags.map((t) => `<span class="pill" style="background:#2b3746">${escapeHtml(t)}</span>`).join(" ")}
       </div>
     </div>`).join("");
@@ -222,7 +222,7 @@ function plotDisasters() {
     const { latitude, longitude } = d.location.point;
     L.marker([latitude, longitude], { icon: dot("#ff4d4f", 16) })
       .bindPopup(`<b>${escapeHtml(d.title)}</b><br>${escapeHtml(d.location.name || "")}<br>
-                  <span class="t-muted">${d.status} · resolved via ${escapeHtml(d.location.source || "?")}</span>`)
+                  <span class="t-muted">${d.status} - resolved via ${escapeHtml(d.location.source || "?")}</span>`)
       .on("click", () => selectDisaster(d.id))
       .addTo(disasterLayer);
   });
@@ -273,14 +273,14 @@ async function loadResources() {
 
     $("resources").innerHTML =
       `<div class="t-muted" style="margin-bottom:6px">
-         ${body.count} within ${body.radius_km} km · centre from ${body.center_source}
+         ${body.count} within ${body.radius_km} km - centre from ${body.center_source}
        </div>` +
       body.items.slice(0, 8).map((r) => `
         <div class="card">
           <div class="title">${escapeHtml(r.name)}</div>
           <div class="meta">
             <span style="color:${RESOURCE_COLOUR[r.type] || "#8b98a8"}">●</span>
-            ${r.type} · ${r.distance_km} km
+            ${r.type} - ${r.distance_km} km
           </div>
         </div>`).join("");
   } catch (err) {
@@ -301,13 +301,13 @@ async function loadReports() {
 
     $("reports").innerHTML =
       `<div class="t-muted" style="margin-bottom:6px">
-         cache: <b>${cache}</b> · age ${body.meta.age_seconds}s ${degraded}
+         cache: <b>${cache}</b> - age ${body.meta.age_seconds}s ${degraded}
        </div>` +
       body.items.map((r) => `
         <div class="card">
           <div class="meta">
             <span class="pill bg-${r.priority}">${r.priority}</span>
-            <span class="t-muted">${escapeHtml(r.author)} · ${r.source}</span>
+            <span class="t-muted">${escapeHtml(r.author)} - ${r.source}</span>
           </div>
           <div style="margin-top:4px">${escapeHtml(r.content)}</div>
         </div>`).join("");
@@ -398,7 +398,7 @@ function pushFeed(envelope) {
       <span class="t-muted">${new Date(envelope.ts).toLocaleTimeString()}</span>
       <b>${envelope.event}</b>
       ${escapeHtml(data.title || "")}
-      ${data.status ? `<span class="t-muted">→ ${data.status}</span>` : ""}
+      ${data.status ? `<span class="t-muted">-> ${data.status}</span>` : ""}
     </div>`);
   $("feed").innerHTML = feed.slice(0, 30).join("");
 }

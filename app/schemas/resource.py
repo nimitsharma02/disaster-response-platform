@@ -29,8 +29,6 @@ class ResourceCreate(BaseModel):
 
     name: str = Field(min_length=2, max_length=200)
     type: ResourceType
-    # Required here, unlike on a disaster: a resource with no position can never
-    # be returned by a proximity search, so it would be dead data.
     latitude: Latitude
     longitude: Longitude
     address: str | None = Field(default=None, max_length=500)
@@ -71,24 +69,13 @@ class ResourceResponse(ORMModel):
     disaster_id: uuid.UUID | None = None
     created_at: datetime
     updated_at: datetime
-    # Present only on proximity queries; computed by PostGIS, not in Python.
     distance_km: float | None = Field(
         default=None, description="Great-circle distance from the query point, kilometres"
     )
 
 
 class NearbySearchParams(BaseModel):
-    """Parameters for ``GET /disasters/{id}/resources``.
-
-    ``lat``/``lng`` are optional: when omitted the search centres on the
-    disaster's own resolved location, which is the common case ("what is near
-    this incident?"). Supplying them lets a responder search around their own
-    position instead.
-
-    ``radius_km`` is capped by ``settings.max_radius_km``. An uncapped radius
-    would let one request scan the entire table, defeating the spatial index and
-    handing a caller a cheap denial-of-service.
-    """
+    """Parameters for GET /disasters/{id}/resources."""
 
     lat: Latitude | None = None
     lng: Longitude | None = None
@@ -105,11 +92,7 @@ class NearbySearchParams(BaseModel):
 
 
 class NearbySearchResponse(BaseModel):
-    """Echoes the effective search parameters alongside the results.
-
-    The centre point may have been derived from the disaster rather than sent by
-    the caller, so returning it removes any ambiguity about what was searched.
-    """
+    """Echoes the effective search parameters alongside the results."""
 
     center: GeoPoint
     center_source: str = Field(description="'query' if supplied by the caller, else 'disaster'")

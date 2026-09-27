@@ -1,18 +1,4 @@
-"""Real-time endpoints: WebSocket and Server-Sent Events.
-
-Both transports carry the same envelope from the same Redis pub/sub channel.
-Two are offered because they suit different consumers:
-
-* **WebSocket** (``/events/ws``) - bidirectional, used by the browser map client.
-  It supports a ping/pong so the client can prove the link is alive.
-* **SSE** (``/events/stream``) - one-directional, plain HTTP, and verifiable with
-  a single ``curl -N``. It reconnects automatically in browsers, needs no client
-  library, and passes through proxies that mishandle WebSocket upgrades.
-
-Envelope::
-
-    {"id": "...", "event": "disaster_updated", "ts": "2026-09-27T...", "data": {...}}
-"""
+"""Real-time endpoints: WebSocket and Server-Sent Events."""
 
 from __future__ import annotations
 
@@ -31,8 +17,6 @@ log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/events", tags=["Real-time"])
 
-# Sent when the stream is otherwise idle. Without it, an idle connection is
-# indistinguishable from a dead one and proxies will quietly drop it.
 _HEARTBEAT_SECONDS = 20
 
 
@@ -42,20 +26,9 @@ _HEARTBEAT_SECONDS = 20
     response_class=StreamingResponse,
 )
 async def sse_stream() -> StreamingResponse:
-    """Subscribe to live events over SSE.
-
-    Verify it with::
-
-        curl -N http://localhost:8000/api/v1/events/stream
-
-    then create or update a disaster in another terminal and watch the event
-    arrive. A ``: heartbeat`` comment line is emitted every 20s to keep
-    intermediaries from closing an idle connection.
-    """
+    """Subscribe to live events over SSE."""
 
     async def _generate() -> AsyncIterator[str]:
-        # Tell the client what it is connected to before anything happens, so an
-        # empty stream is obviously "connected and quiet" rather than "broken".
         yield _format(events.build_envelope("connected", {"transport": "sse"}))
 
         queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=128)
@@ -63,8 +36,6 @@ async def sse_stream() -> StreamingResponse:
         async def _pump() -> None:
             async for event in events.subscribe():
                 if queue.full():
-                    # Drop rather than block the shared subscriber: one slow
-                    # client must not stall delivery to everyone else.
                     log.warning("sse_queue_full_dropping_event", event_type=event.get("event"))
                     continue
                 await queue.put(event)
@@ -92,18 +63,13 @@ async def sse_stream() -> StreamingResponse:
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            # Tell nginx not to buffer, which would defeat streaming entirely.
             "X-Accel-Buffering": "no",
         },
     )
 
 
 def _format(event: dict) -> str:
-    """Render one event in the SSE wire format.
-
-    ``id:`` lets a browser resume with Last-Event-ID; ``event:`` lets a client
-    register a handler per event type rather than switching on the payload.
-    """
+    """Render one event in the SSE wire format."""
     return (
         f"id: {event.get('id', '')}\n"
         f"event: {event.get('event', 'message')}\n"
@@ -113,12 +79,7 @@ def _format(event: dict) -> str:
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
-    """Subscribe to live events over WebSocket.
-
-    The client may send ``ping`` and will receive ``pong``; anything else is
-    ignored. Reads and the event pump run as concurrent tasks so a client that
-    never sends anything still receives events, and a disconnect tears both down.
-    """
+    """Subscribe to live events over WebSocket."""
     await websocket.accept()
     log.info("websocket_client_connected", client=str(websocket.client))
 
@@ -129,8 +90,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await websocket.send_json(event)
 
     async def _receive() -> None:
-        # Draining incoming frames is what surfaces a disconnect; without it a
-        # dead client is only noticed on the next send.
         while True:
             message = await websocket.receive_text()
             if message.strip().lower() == "ping":
@@ -146,7 +105,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         for task in pending:
             task.cancel()
         for task in done:
-            # Re-raise so a genuine failure is logged rather than swallowed.
             with contextlib.suppress(WebSocketDisconnect, asyncio.CancelledError):
                 task.result()
     except WebSocketDisconnect:
