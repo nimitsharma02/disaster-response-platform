@@ -1,0 +1,131 @@
+"""Client for the mock social-media provider.
+
+Its single responsibility is the **anti-corruption layer**: the provider's field
+names (``post_id``, ``user``, ``content``) stop here and never reach the rest of
+the codebase. Everything downstream sees :class:`app.schemas.report.Report`.
+
+That boundary is what makes the provider swappable. Pointing this at a real
+social API would mean rewriting ``_normalise`` and nothing else - no service, no
+route, no response model changes.
+
+Normalisation is also defensive. External data is untrusted input: a missing
+field, a null where a string was promised, or an unparseable timestamp must
+degrade that one item, not fail the whole request. A single malformed post
+should never cost a responder the other eleven.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from typing import Any
+
+import structlog
+
+from app.core.config import settings
+from app.db.models.enums import ReportPriority
+from app.integrations.http import request_json
+from app.integrations.resilience import (
+    CircuitOpenError,
+    PermanentError,
+    TransientError,
+    get_breaker,
+    retry_async,
+)
+from app.schemas.report import Report
+
+log = structlog.get_logger(__name__)
+
+PROVIDER = "mock-social-api"
+SOURCE = "social"
+
+
+async def fetch_reports(query: str, *, limit: int = 12) -> list[Report]:
+    """Fetch and normalise social reports for ``query``.
+
+    Raises :class:`TransientError`, :class:`PermanentError` or
+    :class:`CircuitOpenError` on failure. Deliberately does **not** swallow them:
+    the caller owns the cache and therefore owns the fallback decision.
+    """
+    breaker = get_breaker(PROVIDER)
+
+    async def _call() -> list[Report]:
+        payload = await request_json(
+            "GET",
+            f"{settings.social_api_base_url.rstrip('/')}/social/search",
+            provider=PROVIDER,
+            params={"q": query, "limit": limit},
+        )
+        return _normalise(payload)
+
+    try:
+        return await breaker.call(
+            lambda: retry_async(_call, name=PROVIDER, retry_on=(TransientError,))
+        )
+    except CircuitOpenError:
+        log.warning("social_fetch_skipped_circuit_open", provider=PROVIDER, query=query)
+        raise
+    except (TransientError, PermanentError) as exc:
+        log.warning("social_fetch_failed", provider=PROVIDER, query=query, error=str(exc))
+        raise
+
+
+def _normalise(payload: Any) -> list[Report]:
+    """Map the provider's shape onto ours, discarding items we cannot read."""
+    if not isinstance(payload, dict):
+        raise PermanentError(f"{PROVIDER}: expected a JSON object, got {type(payload).__name__}")
+
+    raw_posts = payload.get("posts")
+    if not isinstance(raw_posts, list):
+        raise PermanentError(f"{PROVIDER}: 'posts' missing or not a list")
+
+    reports: list[Report] = []
+    skipped = 0
+
+    for raw in raw_posts:
+        if not isinstance(raw, dict):
+            skipped += 1
+            continue
+        content = (raw.get("content") or "").strip()
+        if not content:
+            # A report with no text carries no information; drop it rather than
+            # surfacing an empty card to an operator.
+            skipped += 1
+            continue
+        try:
+            reports.append(
+                Report(
+                    id=str(raw.get("post_id") or f"social-{abs(hash(content)) % 10**8}"),
+                    source=SOURCE,
+                    provider=PROVIDER,
+                    author=str(raw.get("user") or "anonymous"),
+                    content=content,
+                    created_at=_parse_timestamp(raw.get("created_at")),
+                    verified=bool(raw.get("verified_account", False)),
+                    # Priority is assigned later by the classifier; the provider
+                    # has no say in our triage.
+                    priority=ReportPriority.LOW,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - one bad item must not fail the batch
+            skipped += 1
+            log.debug("social_item_skipped", provider=PROVIDER, error=str(exc))
+
+    if skipped:
+        log.info("social_items_skipped", provider=PROVIDER, skipped=skipped, kept=len(reports))
+    return reports
+
+
+def _parse_timestamp(value: Any) -> datetime:
+    """Parse a timestamp leniently, defaulting to now.
+
+    An unreadable timestamp is not worth discarding a report over, but a naive
+    datetime is: mixing naive and aware datetimes raises on comparison, so
+    anything without a timezone is assumed UTC.
+    """
+    if isinstance(value, str) and value:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+        except ValueError:
+            log.debug("social_timestamp_unparseable", value=value[:40])
+    return datetime.now(UTC)
