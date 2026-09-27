@@ -1,0 +1,98 @@
+"""Password hashing and JWT issuing/verification.
+
+Deliberate choices, because these are the two things an interviewer will poke at:
+
+* **Argon2id** for passwords, not bcrypt or SHA-256. Argon2id is memory-hard, so
+  a GPU attacker gains far less than with bcrypt, and it won the Password Hashing
+  Competition. ``argon2-cffi`` embeds the parameters in the hash string, so the
+  cost factors can be raised later without invalidating existing hashes.
+* **HS256** for tokens. A single service issues and verifies them, so a shared
+  secret is sufficient and simpler than managing a key pair. The moment a second,
+  independently-deployed verifier existed, RS256/EdDSA would be correct instead,
+  because then verifiers should not hold signing material.
+
+Tokens are stateless: there is no server-side session and therefore no
+revocation list. That is an explicit trade-off, documented in the README.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+import jwt
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerifyMismatchError
+
+from app.core.config import settings
+from app.core.errors import UnauthorizedError
+
+_hasher = PasswordHasher()
+
+
+def hash_password(password: str) -> str:
+    return _hasher.hash(password)
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    """Constant-time-ish verification that never raises on a bad password."""
+    try:
+        return _hasher.verify(password_hash, password)
+    except (VerifyMismatchError, InvalidHashError, ValueError):
+        return False
+
+
+def create_access_token(
+    *,
+    subject: str,
+    username: str,
+    role: str,
+    expires_minutes: int | None = None,
+) -> tuple[str, int]:
+    """Return ``(token, expires_in_seconds)``.
+
+    Claims are kept intentionally minimal: only what is needed to identify the
+    caller. ``role`` is included for debuggability, but the request pipeline
+    deliberately re-reads the user from the database rather than trusting it
+    (see ``app/core/deps.py``), so deactivating a user or changing their role
+    takes effect immediately instead of waiting for their token to expire.
+    """
+    minutes = expires_minutes if expires_minutes is not None else settings.jwt_expires_minutes
+    now = datetime.now(UTC)
+    expires_at = now + timedelta(minutes=minutes)
+
+    payload: dict[str, Any] = {
+        "sub": subject,                # standard: the user id
+        "username": username,
+        "role": role,
+        "iat": int(now.timestamp()),   # issued at
+        "exp": int(expires_at.timestamp()),
+        "jti": str(uuid.uuid4()),      # unique id, the hook a future denylist would use
+        "iss": "disaster-response-platform",
+    }
+    token = jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    return token, int(minutes * 60)
+
+
+def decode_access_token(token: str) -> dict[str, Any]:
+    """Decode and validate a token, or raise :class:`UnauthorizedError`.
+
+    ``algorithms`` is pinned to a single value on purpose: accepting a list the
+    attacker can influence is how the classic ``alg: none`` / HS-vs-RS confusion
+    attacks work.
+    """
+    try:
+        return jwt.decode(
+            token,
+            settings.jwt_secret,
+            algorithms=[settings.jwt_algorithm],
+            issuer="disaster-response-platform",
+            options={"require": ["exp", "sub", "iat"]},
+        )
+    except jwt.ExpiredSignatureError as exc:
+        raise UnauthorizedError("Token has expired") from exc
+    except jwt.InvalidTokenError as exc:
+        # Same message for malformed/wrong-signature/wrong-issuer: do not help
+        # an attacker work out which part of their forgery was rejected.
+        raise UnauthorizedError("Invalid authentication token") from exc
