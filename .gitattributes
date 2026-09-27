@@ -1,0 +1,15 @@
+# Normalise line endings in the repository to LF regardless of the OS a
+# contributor is on. Without this, files authored on Windows land in the repo
+# with CRLF, which breaks shell scripts and produces noisy whole-file diffs.
+* text=auto eol=lf
+
+# Shell scripts and Docker entrypoints MUST be LF or they fail inside Linux
+# containers with "bad interpreter: no such file or directory".
+*.sh   text eol=lf
+*.sql  text eol=lf
+Makefile text eol=lf
+Dockerfile text eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
