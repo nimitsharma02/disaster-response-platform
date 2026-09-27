@@ -24,7 +24,7 @@ class DisasterStatus(StrEnum):
 
 
 class ResourceType(StrEnum):
-    """Kinds of response resource. The brief names the first five."""
+    """Kinds of response resource."""
 
     SHELTER = "shelter"
     HOSPITAL = "hospital"

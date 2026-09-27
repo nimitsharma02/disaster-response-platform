@@ -186,7 +186,7 @@ pm.test("location is explicitly null", () =>
                                {"key": "offset", "value": "0"}]),
                 request(
                     "Filter by tag", "GET", "/disasters",
-                    description="The filter named in the brief. Uses the GIN index on tags.",
+                    description="Tag filter, served by the GIN index on tags.",
                     query=[{"key": "tag", "value": "flood"}],
                     test="""
 pm.test("200 OK", () => pm.response.to.have.status(200));

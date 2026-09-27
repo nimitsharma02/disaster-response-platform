@@ -35,7 +35,7 @@ ENTITY = "disaster"
 
 
 def assert_can_modify(disaster: Disaster, actor: AuthenticatedUser) -> None:
-    """The record-level rule the brief asks to be demonstrated."""
+    """Admins may edit anything, others only their own records."""
     if actor.role == UserRole.ADMIN:
         return
     if disaster.created_by != actor.id:

@@ -1,4 +1,4 @@
-"""Authorization tests, the business rule the brief asks to be."""
+"""Authorization tests: role gates and record ownership."""
 
 from __future__ import annotations
 

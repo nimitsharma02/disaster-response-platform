@@ -425,7 +425,7 @@
                 }
               ]
             },
-            "description": "The filter named in the brief. Uses the GIN index on tags."
+            "description": "Tag filter, served by the GIN index on tags."
           },
           "response": [],
           "event": [

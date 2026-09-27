@@ -113,7 +113,7 @@ def test_score_is_clamped_to_the_unit_interval():
 # Location extraction
 
 
-def test_the_example_from_the_brief():
+def test_manhattan_example_resolves():
     """"Heavy flooding has affected Manhattan, NYC." -> Manhattan, NYC -> coordinates."""
     result = gazetteer.extract_place("Heavy flooding has affected Manhattan, NYC.")
 

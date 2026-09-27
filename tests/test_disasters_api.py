@@ -78,7 +78,7 @@ async def test_create_disaster_without_recognisable_place_still_succeeds(
 
 
 async def test_list_disasters_filters_by_tag(client, contributor_headers):
-    """GET /disasters?tag=flood, the filter named in the brief."""
+    """GET /disasters?tag=flood filters correctly."""
     for title, tags in [
         ("Flood One", ["flood", "urgent"]),
         ("Flood Two", ["flood"]),
