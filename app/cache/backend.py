@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import fnmatch
 import time
 from collections.abc import AsyncIterator
@@ -140,8 +141,9 @@ class RedisBackend:
 
     name = "redis"
 
-    def __init__(self, client) -> None:  # noqa: ANN001 - redis.asyncio.Redis
+    def __init__(self, client, url: str = "") -> None:  # noqa: ANN001 - redis.asyncio.Redis
         self._client = client
+        self._url = url
 
     @property
     def client(self):  # noqa: ANN201
@@ -192,15 +194,31 @@ class RedisBackend:
         await self._client.publish(channel, message)
 
     async def subscribe(self, channel: str) -> AsyncIterator[str]:
-        pubsub = self._client.pubsub(ignore_subscribe_messages=True)
+        # A subscriber sits idle between events, so it needs its own connection
+        # with no read timeout. Reusing the shared client would inherit its
+        # socket_timeout and drop the subscription a few seconds after every
+        # quiet period.
+        from redis.asyncio import Redis
+
+        client = Redis.from_url(
+            self._url or "redis://localhost:6379/0",
+            decode_responses=True,
+            socket_connect_timeout=3,
+            socket_timeout=None,
+            health_check_interval=30,
+        )
+        pubsub = client.pubsub(ignore_subscribe_messages=True)
         await pubsub.subscribe(channel)
         try:
             async for message in pubsub.listen():
                 if message and message.get("type") == "message":
                     yield message["data"]
         finally:
-            await pubsub.unsubscribe(channel)
-            await pubsub.aclose()
+            with contextlib.suppress(Exception):
+                await pubsub.unsubscribe(channel)
+                await pubsub.aclose()
+            with contextlib.suppress(Exception):
+                await client.aclose()
 
     async def ping(self) -> bool:
         try:
@@ -234,7 +252,7 @@ async def init_backend() -> CacheBackend:
             health_check_interval=30,
         )
         await client.ping()
-        _backend = RedisBackend(client)
+        _backend = RedisBackend(client, url=settings.redis_url)
         log.info("cache_backend_ready", backend="redis", url=_redact(settings.redis_url))
     except Exception as exc:
         if not settings.cache_allow_memory_fallback:

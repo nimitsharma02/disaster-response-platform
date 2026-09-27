@@ -157,12 +157,25 @@ const $ = (id) => document.getElementById(id);
 
 const map = L.map("map", { zoomControl: true }).setView([20, 20], 2);
 
-// Public tile servers rate limit and sometimes block. Fall back rather than
-// leaving a blank map, and keep the markers usable either way.
+// OpenStreetMap's own servers reject bulk tile requests from an app and return
+// a "blocked" placeholder with a 200, so a tileerror handler never fires and the
+// fallback below cannot see it. These providers allow this kind of use.
 const TILE_SERVERS = [
-  "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-  "https://tile.openstreetmap.de/{z}/{x}/{y}.png",
-  "https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png",
+  {
+    url: "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+    attribution: "Tiles &copy; Esri",
+    maxZoom: 16,
+  },
+  {
+    url: "https://tile.openstreetmap.de/{z}/{x}/{y}.png",
+    attribution: "&copy; OpenStreetMap contributors",
+    maxZoom: 18,
+  },
+  {
+    url: "https://maps.wikimedia.org/osm-intl/{z}/{x}/{y}.png",
+    attribution: "&copy; OpenStreetMap contributors, Wikimedia",
+    maxZoom: 18,
+  },
 ];
 let tileIndex = 0;
 let tileLayer = null;
@@ -170,9 +183,10 @@ let tileLayer = null;
 function loadTiles(index) {
   if (tileLayer) map.removeLayer(tileLayer);
   let failures = 0;
-  tileLayer = L.tileLayer(TILE_SERVERS[index], {
-    attribution: "&copy; OpenStreetMap contributors",
-    maxZoom: 19,
+  const provider = TILE_SERVERS[index];
+  tileLayer = L.tileLayer(provider.url, {
+    attribution: provider.attribution,
+    maxZoom: provider.maxZoom,
   });
   tileLayer.on("tileerror", () => {
     failures += 1;
