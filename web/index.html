@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-store">
 <title>Disaster Response — Live Map</title>
 
 <!--
@@ -17,7 +18,7 @@
   ask for a frontend, so this is a demonstration surface, not a product.
 -->
 
-<link rel="stylesheet" href="vendor/leaflet.min.css">
+<link rel="stylesheet" href="/demo/vendor/leaflet.min.css?v=1">
 <style>
   :root {
     --bg: #0f1419; --panel: #1a2029; --panel-2: #222a35; --line: #2f3946;
@@ -141,7 +142,15 @@
 <div id="map"></div>
 <div id="tileWarning">Map tiles could not be loaded, the tile server is unreachable or blocked. Incident and resource markers still work.</div>
 
-<script src="vendor/leaflet.min.js"></script>
+<script src="/demo/vendor/leaflet.min.js?v=1"></script>
+<script>
+if (typeof L === "undefined") {
+  document.getElementById("map").innerHTML =
+    '<div style="padding:40px;color:#ff9838;font:14px sans-serif">' +
+    'Leaflet did not load. Open /demo/vendor/leaflet.min.js directly to check, ' +
+    'and try a private window in case an extension is blocking it.</div>';
+}
+</script>
 <script>
 const API = "/api/v1";
 const $ = (id) => document.getElementById(id);
