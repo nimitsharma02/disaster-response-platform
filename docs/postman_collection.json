@@ -1,0 +1,1303 @@
+{
+  "info": {
+    "name": "Disaster Response Coordination Platform",
+    "description": "Run the requests in order. **1. Authentication \u2192 Login as admin** stores the JWT in a collection variable, so every later request is authorised automatically. **2. Disasters \u2192 Create** stores the new id as `disasterId`.\n\nSet `baseUrl` to `http://localhost:8000/api/v1` (the default).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000/api/v1"
+    },
+    {
+      "key": "token",
+      "value": ""
+    },
+    {
+      "key": "disasterId",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Authentication",
+      "description": "Mock users seeded by scripts/seed.py.",
+      "item": [
+        {
+          "name": "Login as admin",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Full access, including DELETE. Stores {{token}}.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"admin\",\n  \"password\": \"admin123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set(\"token\", body.access_token);",
+                  "pm.test(\"returns a bearer token\", () => pm.expect(body.token_type).to.eql(\"bearer\"));",
+                  "pm.test(\"never leaks the password hash\", () =>",
+                  "    pm.expect(body.user).to.not.have.property(\"password_hash\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login as contributor",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "May create, and update ONLY records they own. Stores {{token}}.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"contributor\",\n  \"password\": \"contributor123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set(\"token\", pm.response.json().access_token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login as responder (read-only)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Read-only role. Use to demonstrate a 403 on write.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"responder\",\n  \"password\": \"responder123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set(\"token\", pm.response.json().access_token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login with a wrong password (401)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Returns exactly the same body as an unknown username, so the endpoint cannot be used to enumerate accounts.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"admin\",\n  \"password\": \"wrong-password\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"problem+json\", () =>",
+                  "    pm.expect(pm.response.headers.get(\"content-type\")).to.include(\"problem+json\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Who am I",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "2. Disasters (CRUD)",
+      "item": [
+        {
+          "name": "Create \u2014 location resolved from the description",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/disasters",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters"
+              ]
+            },
+            "description": "No coordinates are sent. The service extracts the place name from `description` and geocodes it, reporting how it got there in `location.source` with a `location.confidence` score.\n\nStores the new id as {{disasterId}}.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Manhattan Flash Flooding\",\n  \"description\": \"Heavy flooding has affected Manhattan, NYC. Several subway stations are submerged.\",\n  \"tags\": [\n    \"flood\",\n    \"urgent\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 Created\", () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set(\"disasterId\", body.id);",
+                  "pm.test(\"location was resolved from free text\", () =>",
+                  "    pm.expect(body.location.point).to.not.be.null);",
+                  "pm.test(\"resolution provenance is reported\", () => {",
+                  "    pm.expect(body.location.source).to.be.a(\"string\");",
+                  "    pm.expect(body.location.confidence).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create with explicit coordinates",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/disasters",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters"
+              ]
+            },
+            "description": "Supplied coordinates always win; source becomes 'manual'.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Surveyed Incident\",\n  \"description\": \"An incident at coordinates supplied by the reporter.\",\n  \"latitude\": 19.076,\n  \"longitude\": 72.8777,\n  \"location_name\": \"Mumbai, India\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create with an unresolvable description",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/disasters",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters"
+              ]
+            },
+            "description": "Resolution failure must never block recording an incident. Returns 201 with location.point = null.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Unknown Location Event\",\n  \"description\": \"something bad is happening and nobody knows where\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 even though nothing resolved\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"location is explicitly null\", () =>",
+                  "    pm.expect(pm.response.json().location.point).to.be.null);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List all",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/disasters?limit=20&offset=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "20"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Filter by tag",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/disasters?tag=flood",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters"
+              ],
+              "query": [
+                {
+                  "key": "tag",
+                  "value": "flood"
+                }
+              ]
+            },
+            "description": "The filter named in the brief. Uses the GIN index on tags."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"every result carries the tag\", () =>",
+                  "    pm.response.json().items.forEach(d => pm.expect(d.tags).to.include(\"flood\")));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Filter by status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/disasters?status=in_progress",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "in_progress"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Free-text search",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/disasters?q=flood",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "flood"
+                }
+              ]
+            },
+            "description": "Substring of title or description (pg_trgm index)."
+          },
+          "response": []
+        },
+        {
+          "name": "Filter by proximity",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/disasters?lat=40.7128&lng=-74.0060&radius_km=50&sort=distance",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters"
+              ],
+              "query": [
+                {
+                  "key": "lat",
+                  "value": "40.7128"
+                },
+                {
+                  "key": "lng",
+                  "value": "-74.0060"
+                },
+                {
+                  "key": "radius_km",
+                  "value": "50"
+                },
+                {
+                  "key": "sort",
+                  "value": "distance"
+                }
+              ]
+            },
+            "description": "Same PostGIS ST_DWithin path, applied to the list endpoint."
+          },
+          "response": []
+        },
+        {
+          "name": "Get one",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/disasters/{{disasterId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters",
+                "{{disasterId}}"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Update (partial)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/disasters/{{disasterId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters",
+                "{{disasterId}}"
+              ]
+            },
+            "description": "Only the fields present in the body change. Emits disaster_updated.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"in_progress\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"status changed\", () => pm.expect(pm.response.json().status).to.eql(\"in_progress\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Audit trail",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/disasters/{{disasterId}}/audit",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters",
+                "{{disasterId}}",
+                "audit"
+              ]
+            },
+            "description": "Who changed this incident, what changed, and when."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete (admin only)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/disasters/{{disasterId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters",
+                "{{disasterId}}"
+              ]
+            },
+            "description": "Log in as admin first. A contributor gets 403 even for their own record."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"204 No Content\", () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Geospatial \u2014 nearby resources",
+      "description": "PostGIS ST_DWithin against a GiST-indexed geography column.",
+      "item": [
+        {
+          "name": "Nearby (centre = the disaster)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/disasters/{{disasterId}}/resources?radius_km=5&limit=50",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters",
+                "{{disasterId}}",
+                "resources"
+              ],
+              "query": [
+                {
+                  "key": "radius_km",
+                  "value": "5"
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                }
+              ]
+            },
+            "description": "Omit lat/lng and the search centres on the incident's own resolved location. Results are nearest-first with distances computed by PostGIS in kilometres."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"centre was taken from the disaster\", () =>",
+                  "    pm.expect(body.center_source).to.eql(\"disaster\"));",
+                  "pm.test(\"results are ordered nearest-first\", () => {",
+                  "    const d = body.items.map(i => i.distance_km);",
+                  "    pm.expect(d).to.eql([...d].sort((a, b) => a - b));",
+                  "});",
+                  "pm.test(\"everything is inside the radius\", () =>",
+                  "    body.items.forEach(i => pm.expect(i.distance_km).to.be.at.most(body.radius_km)));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Nearby (centre = my position)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/disasters/{{disasterId}}/resources?lat=40.7128&lng=-74.0060&radius_km=10",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters",
+                "{{disasterId}}",
+                "resources"
+              ],
+              "query": [
+                {
+                  "key": "lat",
+                  "value": "40.7128"
+                },
+                {
+                  "key": "lng",
+                  "value": "-74.0060"
+                },
+                {
+                  "key": "radius_km",
+                  "value": "10"
+                }
+              ]
+            },
+            "description": "A responder searching around their own location instead."
+          },
+          "response": []
+        },
+        {
+          "name": "Nearby, filtered by type",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/disasters/{{disasterId}}/resources?radius_km=20&type=hospital",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters",
+                "{{disasterId}}",
+                "resources"
+              ],
+              "query": [
+                {
+                  "key": "radius_km",
+                  "value": "20"
+                },
+                {
+                  "key": "type",
+                  "value": "hospital"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Radius above the cap (422)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/disasters/{{disasterId}}/resources?radius_km=99999",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters",
+                "{{disasterId}}",
+                "resources"
+              ],
+              "query": [
+                {
+                  "key": "radius_km",
+                  "value": "99999"
+                }
+              ]
+            },
+            "description": "radius_km is capped so one request cannot scan the whole table and defeat the spatial index."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"422\", () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List all resources",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/resources?limit=50",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "resources"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Create a resource (admin only)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/resources",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "resources"
+              ]
+            },
+            "description": "Coordinates are required here, unlike on a disaster.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Bellevue Hospital Center\",\n  \"type\": \"hospital\",\n  \"latitude\": 40.7392,\n  \"longitude\": -73.9762,\n  \"address\": \"462 1st Ave, New York, NY 10016\",\n  \"capacity\": 850\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "4. Reports \u2014 external integration + caching",
+      "description": "Aggregates two mock providers with different payload shapes. Watch the X-Cache header: MISS on the first call, HIT on the second.",
+      "item": [
+        {
+          "name": "Reports (first call \u2014 MISS)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/disasters/{{disasterId}}/reports",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters",
+                "{{disasterId}}",
+                "reports"
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"cache reports MISS\", () =>",
+                  "    pm.expect(pm.response.headers.get(\"X-Cache\")).to.eql(\"MISS\"));",
+                  "pm.test(\"both providers normalised into one shape\", () => {",
+                  "    const sources = new Set(pm.response.json().items.map(i => i.source));",
+                  "    pm.expect(sources.has(\"social\") || sources.has(\"official\")).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reports (second call \u2014 HIT)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/disasters/{{disasterId}}/reports",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters",
+                "{{disasterId}}",
+                "reports"
+              ]
+            },
+            "description": "No external call is made; served from cache."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"cache reports HIT\", () =>",
+                  "    pm.expect(pm.response.headers.get(\"X-Cache\")).to.eql(\"HIT\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reports, forced refresh",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/disasters/{{disasterId}}/reports?refresh=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters",
+                "{{disasterId}}",
+                "reports"
+              ],
+              "query": [
+                {
+                  "key": "refresh",
+                  "value": "true"
+                }
+              ]
+            },
+            "description": "Bypasses the cache and re-fetches."
+          },
+          "response": []
+        },
+        {
+          "name": "Reports, only critical",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/disasters/{{disasterId}}/reports?priority=critical",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters",
+                "{{disasterId}}",
+                "reports"
+              ],
+              "query": [
+                {
+                  "key": "priority",
+                  "value": "critical"
+                }
+              ]
+            },
+            "description": "Priority is assigned by a deterministic classifier; matched_signals explains why each report scored as it did."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "5. Error handling",
+      "description": "Every error is an RFC 9457 problem document.",
+      "item": [
+        {
+          "name": "Missing required field (422)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/disasters",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"No description\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"422\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"problem+json\", () =>",
+                  "    pm.expect(pm.response.headers.get(\"content-type\")).to.include(\"problem+json\"));",
+                  "pm.test(\"field-level detail\", () => {",
+                  "    const b = pm.response.json();",
+                  "    pm.expect(b.errors).to.be.an(\"array\");",
+                  "    pm.expect(b.request_id).to.be.a(\"string\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unknown field is rejected, not ignored (422)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/disasters",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Typo Check\",\n  \"description\": \"An incident in Mumbai used to check unknown fields.\",\n  \"statuss\": \"verified\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Impossible latitude (422)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/disasters",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Bad Coordinates\",\n  \"description\": \"A latitude that cannot exist on Earth.\",\n  \"latitude\": 91.0,\n  \"longitude\": 0.0\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Unknown disaster (404)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/disasters/00000000-0000-0000-0000-000000000000",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters",
+                "00000000-0000-0000-0000-000000000000"
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"404 not 500\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"code is not_found\", () =>",
+                  "    pm.expect(pm.response.json().code).to.eql(\"not_found\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "No token (401)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/disasters",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"No Auth\",\n  \"description\": \"Posted without a bearer token.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"tells the client how to authenticate\", () =>",
+                  "    pm.expect(pm.response.headers.get(\"WWW-Authenticate\")).to.eql(\"Bearer\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Responder attempts a write (403)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/disasters",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters"
+              ]
+            },
+            "description": "Log in as responder first. Demonstrates the role gate.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Responder Attempt\",\n  \"description\": \"A read-only responder should not create this.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. Health",
+      "item": [
+        {
+          "name": "Liveness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Readiness (dependencies + breaker state)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health/ready",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health",
+                "ready"
+              ]
+            },
+            "description": "Reports database and cache status plus live circuit-breaker state per external provider \u2014 i.e. which provider is currently being skipped, and why."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

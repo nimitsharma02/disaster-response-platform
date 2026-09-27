@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Disaster Response — Live Map</title>
+
+<!--
+  Minimal operator console, served by the API itself at /demo/.
+
+  It exists to make three things visible in about ten seconds:
+    1. Geospatial search  - drag the radius slider, watch ST_DWithin results change
+    2. Real-time          - the WebSocket feed updates the map with no refresh
+    3. Location resolution - create an incident from free text, see it land on the map
+
+  Deliberately one file with no build step and no framework. The brief does not
+  ask for a frontend, so this is a demonstration surface, not a product.
+-->
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root {
+    --bg: #0f1419; --panel: #1a2029; --panel-2: #222a35; --line: #2f3946;
+    --text: #e6edf3; --muted: #8b98a8; --accent: #4a9eff;
+    --critical: #ff4d4f; --high: #ff9838; --medium: #ffd666; --low: #52c41a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; display: flex; background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  #sidebar {
+    width: 400px; min-width: 400px; height: 100vh; overflow-y: auto;
+    background: var(--panel); border-right: 1px solid var(--line); padding: 16px;
+  }
+  #map { flex: 1; height: 100vh; }
+  h1 { font-size: 17px; margin: 0 0 2px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
+       color: var(--muted); margin: 20px 0 8px; font-weight: 600; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
+  .card { background: var(--panel-2); border: 1px solid var(--line);
+          border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+  .card.clickable { cursor: pointer; }
+  .card.clickable:hover { border-color: var(--accent); }
+  .card .title { font-weight: 600; margin-bottom: 2px; }
+  .card .meta { color: var(--muted); font-size: 12px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  input, textarea, select, button {
+    width: 100%; padding: 8px 10px; border-radius: 6px; font: inherit;
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+  }
+  textarea { resize: vertical; min-height: 64px; }
+  button { background: var(--accent); border-color: var(--accent); color: #05192e;
+           font-weight: 600; cursor: pointer; margin-top: 10px; }
+  button:hover { filter: brightness(1.08); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .pill { display: inline-block; padding: 1px 7px; border-radius: 999px;
+          font-size: 11px; font-weight: 600; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+                margin-right: 6px; background: var(--muted); }
+  .status-dot.live { background: var(--low); box-shadow: 0 0 6px var(--low); }
+  .status-dot.down { background: var(--critical); }
+  #feed { max-height: 220px; overflow-y: auto; font-size: 12px;
+          border: 1px solid var(--line); border-radius: 8px; padding: 8px;
+          background: #131922; }
+  #feed .ev { padding: 3px 0; border-bottom: 1px solid #1e2632; }
+  #feed .ev:last-child { border-bottom: 0; }
+  .t-muted { color: var(--muted); }
+  .critical { color: var(--critical); } .high { color: var(--high); }
+  .medium { color: var(--medium); }   .low { color: var(--low); }
+  .bg-critical { background: var(--critical); color: #fff; }
+  .bg-high { background: var(--high); color: #1a1000; }
+  .bg-medium { background: var(--medium); color: #211a00; }
+  .bg-low { background: var(--low); color: #052000; }
+  .err { color: var(--critical); font-size: 12px; margin-top: 8px; }
+  .ok  { color: var(--low); font-size: 12px; margin-top: 8px; }
+  .leaflet-popup-content-wrapper, .leaflet-popup-tip {
+    background: var(--panel-2); color: var(--text); }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <h1>Disaster Response</h1>
+  <div class="sub">
+    <span id="wsDot" class="status-dot"></span><span id="wsText">connecting…</span>
+    &nbsp;·&nbsp; <a href="/docs" style="color:var(--accent)">API docs</a>
+  </div>
+
+  <h2>Incidents</h2>
+  <div id="disasters"><div class="t-muted">loading…</div></div>
+
+  <h2>Nearby resources</h2>
+  <label>Radius: <strong id="radiusLabel">10</strong> km</label>
+  <input type="range" id="radius" min="1" max="50" value="10">
+  <label>Type</label>
+  <select id="typeFilter">
+    <option value="">All types</option>
+    <option value="shelter">Shelter</option><option value="hospital">Hospital</option>
+    <option value="food">Food</option><option value="water">Water</option>
+    <option value="rescue">Rescue</option>
+    <option value="medical_supply">Medical supply</option>
+    <option value="evacuation_point">Evacuation point</option>
+  </select>
+  <div id="resources" class="t-muted" style="margin-top:10px">Select an incident.</div>
+
+  <h2>Community reports</h2>
+  <div id="reports" class="t-muted">Select an incident.</div>
+
+  <h2>Report an incident</h2>
+  <div class="t-muted" style="font-size:12px;margin-bottom:6px">
+    Leave coordinates out — the location is resolved from the description.
+  </div>
+  <label>Sign in</label>
+  <div class="row">
+    <select id="user">
+      <option value="admin">admin</option>
+      <option value="contributor" selected>contributor</option>
+      <option value="responder">responder (read-only)</option>
+    </select>
+    <input id="password" type="password" value="contributor123" placeholder="password">
+  </div>
+  <label>Title</label>
+  <input id="title" value="Flash flooding in Mumbai">
+  <label>Description</label>
+  <textarea id="description">Severe waterlogging reported across Mumbai after 300mm of rainfall overnight. Several low-lying suburbs are cut off.</textarea>
+  <label>Tags (comma separated)</label>
+  <input id="tags" value="flood, urgent">
+  <button id="create">Create incident</button>
+  <div id="createMsg"></div>
+
+  <h2>Live event feed</h2>
+  <div id="feed"><div class="t-muted">Waiting for events…</div></div>
+</div>
+
+<div id="map"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const API = "/api/v1";
+const $ = (id) => document.getElementById(id);
+
+const map = L.map("map", { zoomControl: true }).setView([20, 20], 2);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  attribution: "&copy; OpenStreetMap contributors", maxZoom: 19,
+}).addTo(map);
+
+const disasterLayer = L.layerGroup().addTo(map);
+const resourceLayer = L.layerGroup().addTo(map);
+let radiusCircle = null;
+let selectedId = null;
+let selectedLatLng = null;
+let disasters = [];
+
+const RESOURCE_COLOUR = {
+  shelter: "#4a9eff", hospital: "#ff4d4f", food: "#ffd666",
+  water: "#36cfc9", rescue: "#b37feb", medical_supply: "#ff85c0",
+  evacuation_point: "#95de64",
+};
+
+function dot(colour, size = 12) {
+  return L.divIcon({
+    className: "",
+    html: `<div style="width:${size}px;height:${size}px;border-radius:50%;
+           background:${colour};border:2px solid #0f1419;
+           box-shadow:0 0 0 1px ${colour}80"></div>`,
+    iconSize: [size, size], iconAnchor: [size / 2, size / 2],
+  });
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(API + path, options);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    // The API always returns an RFC 9457 problem document, so there is exactly
+    // one place to read the message from regardless of which endpoint failed.
+    throw new Error(body.detail || `HTTP ${response.status}`);
+  }
+  return { body, headers: response.headers };
+}
+
+/* ---------------------------------------------------------------- incidents */
+
+async function loadDisasters() {
+  try {
+    const { body } = await api("/disasters?limit=100");
+    disasters = body.items;
+    renderDisasters();
+    plotDisasters();
+    if (!selectedId && disasters.length) {
+      const located = disasters.find((d) => d.location.point);
+      if (located) selectDisaster(located.id);
+    }
+  } catch (err) {
+    $("disasters").innerHTML = `<div class="err">${err.message}</div>`;
+  }
+}
+
+function renderDisasters() {
+  if (!disasters.length) {
+    $("disasters").innerHTML = '<div class="t-muted">No incidents yet.</div>';
+    return;
+  }
+  $("disasters").innerHTML = disasters.map((d) => `
+    <div class="card clickable" data-id="${d.id}"
+         style="${d.id === selectedId ? "border-color:var(--accent)" : ""}">
+      <div class="title">${escapeHtml(d.title)}</div>
+      <div class="meta">
+        ${escapeHtml(d.location.name || "location unresolved")} · ${d.status}
+        ${d.tags.map((t) => `<span class="pill" style="background:#2b3746">${escapeHtml(t)}</span>`).join(" ")}
+      </div>
+    </div>`).join("");
+
+  document.querySelectorAll("#disasters .card").forEach((el) =>
+    el.addEventListener("click", () => selectDisaster(el.dataset.id)));
+}
+
+function plotDisasters() {
+  disasterLayer.clearLayers();
+  disasters.filter((d) => d.location.point).forEach((d) => {
+    const { latitude, longitude } = d.location.point;
+    L.marker([latitude, longitude], { icon: dot("#ff4d4f", 16) })
+      .bindPopup(`<b>${escapeHtml(d.title)}</b><br>${escapeHtml(d.location.name || "")}<br>
+                  <span class="t-muted">${d.status} · resolved via ${escapeHtml(d.location.source || "?")}</span>`)
+      .on("click", () => selectDisaster(d.id))
+      .addTo(disasterLayer);
+  });
+}
+
+function selectDisaster(id) {
+  selectedId = id;
+  const d = disasters.find((x) => x.id === id);
+  renderDisasters();
+  if (!d || !d.location.point) {
+    $("resources").innerHTML =
+      '<div class="t-muted">This incident has no resolved location, so there is no centre to search from.</div>';
+    return;
+  }
+  selectedLatLng = [d.location.point.latitude, d.location.point.longitude];
+  map.setView(selectedLatLng, 12);
+  loadResources();
+  loadReports();
+}
+
+/* ---------------------------------------------------------------- resources */
+
+async function loadResources() {
+  if (!selectedId || !selectedLatLng) return;
+  const radius = $("radius").value;
+  const type = $("typeFilter").value;
+  $("resources").innerHTML = '<div class="t-muted">searching…</div>';
+
+  try {
+    const query = `/disasters/${selectedId}/resources?radius_km=${radius}` +
+                  (type ? `&type=${type}` : "") + "&limit=200";
+    const { body } = await api(query);
+
+    resourceLayer.clearLayers();
+    if (radiusCircle) map.removeLayer(radiusCircle);
+    radiusCircle = L.circle(selectedLatLng, {
+      radius: radius * 1000, color: "#4a9eff", weight: 1,
+      fillColor: "#4a9eff", fillOpacity: 0.06,
+    }).addTo(map);
+
+    body.items.forEach((r) => {
+      L.marker([r.location.latitude, r.location.longitude],
+               { icon: dot(RESOURCE_COLOUR[r.type] || "#8b98a8", 11) })
+        .bindPopup(`<b>${escapeHtml(r.name)}</b><br>${r.type}<br>
+                    <span class="t-muted">${r.distance_km} km away</span>`)
+        .addTo(resourceLayer);
+    });
+
+    $("resources").innerHTML =
+      `<div class="t-muted" style="margin-bottom:6px">
+         ${body.count} within ${body.radius_km} km · centre from ${body.center_source}
+       </div>` +
+      body.items.slice(0, 8).map((r) => `
+        <div class="card">
+          <div class="title">${escapeHtml(r.name)}</div>
+          <div class="meta">
+            <span style="color:${RESOURCE_COLOUR[r.type] || "#8b98a8"}">●</span>
+            ${r.type} · ${r.distance_km} km
+          </div>
+        </div>`).join("");
+  } catch (err) {
+    $("resources").innerHTML = `<div class="err">${err.message}</div>`;
+  }
+}
+
+/* ------------------------------------------------------------------ reports */
+
+async function loadReports() {
+  if (!selectedId) return;
+  $("reports").innerHTML = '<div class="t-muted">loading…</div>';
+  try {
+    const { body, headers } = await api(`/disasters/${selectedId}/reports?limit=8`);
+    const cache = headers.get("X-Cache") || body.meta.cache;
+    const degraded = body.meta.degraded
+      ? '<span class="pill bg-high">degraded</span>' : "";
+
+    $("reports").innerHTML =
+      `<div class="t-muted" style="margin-bottom:6px">
+         cache: <b>${cache}</b> · age ${body.meta.age_seconds}s ${degraded}
+       </div>` +
+      body.items.map((r) => `
+        <div class="card">
+          <div class="meta">
+            <span class="pill bg-${r.priority}">${r.priority}</span>
+            <span class="t-muted">${escapeHtml(r.author)} · ${r.source}</span>
+          </div>
+          <div style="margin-top:4px">${escapeHtml(r.content)}</div>
+        </div>`).join("");
+  } catch (err) {
+    $("reports").innerHTML = `<div class="err">${err.message}</div>`;
+  }
+}
+
+/* -------------------------------------------------------------------- create */
+
+async function login(username, password) {
+  const { body } = await api("/auth/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  return body.access_token;
+}
+
+$("create").addEventListener("click", async () => {
+  const button = $("create");
+  button.disabled = true;
+  $("createMsg").innerHTML = "";
+  try {
+    const token = await login($("user").value, $("password").value);
+    const { body } = await api("/disasters", {
+      method: "POST",
+      headers: { "content-type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        title: $("title").value,
+        description: $("description").value,
+        tags: $("tags").value.split(",").map((t) => t.trim()).filter(Boolean),
+      }),
+    });
+    const loc = body.location;
+    $("createMsg").innerHTML = loc.point
+      ? `<div class="ok">Created. Location resolved to ${escapeHtml(loc.name)}
+         (${loc.source}, confidence ${loc.confidence}).</div>`
+      : `<div class="ok">Created, but no location could be resolved from the description.</div>`;
+    // The list also refreshes via the WebSocket event; this just makes the
+    // result immediate for the person who clicked.
+    await loadDisasters();
+    selectDisaster(body.id);
+  } catch (err) {
+    $("createMsg").innerHTML = `<div class="err">${err.message}</div>`;
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$("user").addEventListener("change", (e) => {
+  $("password").value = { admin: "admin123", contributor: "contributor123",
+                          responder: "responder123" }[e.target.value] || "";
+});
+$("radius").addEventListener("input", (e) => { $("radiusLabel").textContent = e.target.value; });
+$("radius").addEventListener("change", loadResources);
+$("typeFilter").addEventListener("change", loadResources);
+
+/* ----------------------------------------------------------------- realtime */
+
+function connectWebSocket() {
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  const socket = new WebSocket(`${scheme}://${location.host}${API}/events/ws`);
+
+  socket.onopen = () => {
+    $("wsDot").className = "status-dot live";
+    $("wsText").textContent = "live";
+  };
+  socket.onclose = () => {
+    $("wsDot").className = "status-dot down";
+    $("wsText").textContent = "disconnected — retrying";
+    // Reconnect, because a dropped socket must not silently stop the map
+    // updating. A production client would back off exponentially.
+    setTimeout(connectWebSocket, 3000);
+  };
+  socket.onmessage = (message) => {
+    const envelope = JSON.parse(message.data);
+    if (envelope.event === "connected") return;
+    pushFeed(envelope);
+    if (envelope.event.startsWith("disaster_")) loadDisasters();
+  };
+}
+
+const feed = [];
+function pushFeed(envelope) {
+  const data = envelope.data || {};
+  feed.unshift(`<div class="ev">
+      <span class="t-muted">${new Date(envelope.ts).toLocaleTimeString()}</span>
+      <b>${envelope.event}</b>
+      ${escapeHtml(data.title || "")}
+      ${data.status ? `<span class="t-muted">→ ${data.status}</span>` : ""}
+    </div>`);
+  $("feed").innerHTML = feed.slice(0, 30).join("");
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+loadDisasters();
+connectWebSocket();
+</script>
+</body>
+</html>

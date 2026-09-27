@@ -1,0 +1,2434 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Disaster Response Coordination Platform",
+    "description": "\nBackend for coordinating disaster response: incident records, automatic location\nresolution from free text, geospatial resource search, aggregated community\nreports, and a live event stream.\n\n### Getting started\n\n1. `POST /api/v1/auth/login` with `{\"username\": \"admin\", \"password\": \"admin123\"}`\n2. Click **Authorize** above and paste the `access_token`\n3. `POST /api/v1/disasters` - omit the coordinates and let the service resolve\n   the location from your description\n\n### Demo accounts\n\n| username | role | permissions |\n|---|---|---|\n| `admin` | admin | full access, including `DELETE` |\n| `contributor` | contributor | create; update **only their own** records |\n| `responder` | responder | read-only |\n\n### Things worth looking at\n\n* **Geospatial** - `GET /disasters/{id}/resources` uses PostGIS `ST_DWithin`\n  against a GiST-indexed `geography(Point, 4326)` column.\n* **Caching** - `GET /disasters/{id}/reports` returns `X-Cache: HIT|MISS|STALE`.\n* **Failure handling** - stop the mock provider\n  (`docker compose stop mock-services`) and re-request reports: you get a `200`\n  with `degraded: true`, not a `500`.\n* **Real-time** - `curl -N http://localhost:8000/api/v1/events/stream`, then\n  create a disaster in another terminal.\n",
+    "contact": {
+      "name": "API support",
+      "email": "support@example.com"
+    },
+    "license": {
+      "name": "MIT"
+    },
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/v1/health": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Liveness probe",
+        "operationId": "health_api_v1_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/health/ready": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Readiness probe: dependency checks",
+        "description": "Check every dependency and report per-component status.\n\nReturns 503 when a hard dependency is down, so an orchestrator or load\nbalancer can act on the status code alone without parsing the body.\n\nThe cache is a **soft** dependency: with ``CACHE_ALLOW_MEMORY_FALLBACK`` the\napp still serves correctly without Redis, just without a shared cache or\ncross-worker events. It is reported as degraded, not failed.",
+        "operationId": "readiness_api_v1_health_ready_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/login": {
+      "post": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Exchange credentials for a JWT",
+        "description": "Authenticate and return a bearer token.\n\nSeeded demo accounts (created by ``scripts/seed.py``):\n\n| username    | role        | can do                                  |\n|-------------|-------------|-----------------------------------------|\n| admin       | admin       | everything, including DELETE            |\n| contributor | contributor | create; update **only their own** records |\n| responder   | responder   | read-only                               |",
+        "operationId": "login_api_v1_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many login attempts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/me": {
+      "get": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Describe the current token holder",
+        "operationId": "me_api_v1_auth_me_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserPublic"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/users": {
+      "get": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "List the seeded demo accounts",
+        "description": "Convenience endpoint for exploring the demo.\n\nAuthentication is required, and only public fields are returned - no hashes.\nA real system would restrict this to admins; it is open to any authenticated\ncaller here purely so a reviewer can see the seeded roles.",
+        "operationId": "list_users_api_v1_auth_users_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/UserPublic"
+                  },
+                  "type": "array",
+                  "title": "Response List Users Api V1 Auth Users Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/disasters/{disaster_id}/resources": {
+      "get": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Find resources near a disaster",
+        "description": "Resources within ``radius_km`` of a point, nearest first.\n\n**How the search works.** The radius filter is a PostGIS\n``ST_DWithin(location, point, radius_km * 1000)`` against a\n``geography(Point, 4326)`` column with a **GiST index**. ``ST_DWithin`` is\nindex-accelerated: the planner uses the index to discard rows by bounding\nbox first and computes exact distances only on the survivors.\n``ST_Distance(...) < r`` would look equivalent and force a full table scan.\n\nDistances come back from the database in kilometres, and ordering happens in\nSQL so ``LIMIT`` returns the genuinely nearest rows rather than the first N\nmatches re-sorted in Python.\n\n**Search centre.** Supply ``lat``/``lng`` to search around an arbitrary\npoint (a responder's own position). Omit them and the disaster's own resolved\nlocation is used. If the disaster has no location and none is given, the\nresponse is a 422 - \"we do not know where to look\" is not the same answer as\n\"there is nothing nearby\".\n\n**Radius cap.** ``radius_km`` is capped at ``MAX_RADIUS_KM`` so one request\ncannot be used to scan the whole table.",
+        "operationId": "find_nearby_resources_api_v1_disasters__disaster_id__resources_get",
+        "parameters": [
+          {
+            "name": "disaster_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Disaster Id"
+            }
+          },
+          {
+            "name": "lat",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "maximum": 90,
+                  "minimum": -90
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Search centre latitude. Defaults to the disaster's own.",
+              "title": "Lat"
+            },
+            "description": "Search centre latitude. Defaults to the disaster's own."
+          },
+          {
+            "name": "lng",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "maximum": 180,
+                  "minimum": -180
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Search centre longitude.",
+              "title": "Lng"
+            },
+            "description": "Search centre longitude."
+          },
+          {
+            "name": "radius_km",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "maximum": 500.0,
+              "exclusiveMinimum": 0,
+              "description": "Search radius in km (max 500.0)",
+              "default": 10.0,
+              "title": "Radius Km"
+            },
+            "description": "Search radius in km (max 500.0)"
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ResourceType"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Restrict to one resource type",
+              "title": "Type"
+            },
+            "description": "Restrict to one resource type"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NearbySearchResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Disaster not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid parameters, or the disaster has no location and none was supplied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/resources": {
+      "get": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "List resources",
+        "description": "Plain, non-spatial listing. Useful for seeding a map before a search.",
+        "operationId": "list_resources_api_v1_resources_get",
+        "parameters": [
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ResourceType"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Type"
+            }
+          },
+          {
+            "name": "disaster_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Disaster Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "Rows per page (max 100)",
+              "default": 20,
+              "title": "Limit"
+            },
+            "description": "Rows per page (max 100)"
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Rows to skip",
+              "default": 0,
+              "title": "Offset"
+            },
+            "description": "Rows to skip"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ResourceResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Create a resource (admin only)",
+        "description": "Register a resource.\n\n**Authorization:** ``admin`` only. Resources are reference data that the\nwhole response depends on - a wrong shelter location sends people to the\nwrong place - so writes are deliberately narrower than for incidents.\n\nCoordinates are required here, unlike on a disaster: a resource with no\nposition can never be returned by a proximity search.",
+        "operationId": "create_resource_api_v1_resources_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResourceCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResourceResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Linked disaster not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/api/v1/resources/{resource_id}": {
+      "get": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Fetch one resource",
+        "operationId": "get_resource_api_v1_resources__resource_id__get",
+        "parameters": [
+          {
+            "name": "resource_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Resource Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResourceResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/disasters/{disaster_id}/reports": {
+      "get": {
+        "tags": [
+          "Reports"
+        ],
+        "summary": "Community and official reports for a disaster",
+        "description": "Aggregated reports from two external providers.\n\n**Sources.** A mock social-media feed and a mock official bulletin feed, each\nrunning as a separate service behind a real HTTP boundary. Their payload\nshapes differ and are normalised into one ``Report`` model, so adding or\nswapping a provider changes only its client.\n\n**Caching.** Responses are cached for ``CACHE_TTL_REPORTS`` (default 5\nminutes) in Redis, fronted by a short in-process tier. The ``X-Cache`` header\nand ``meta.cache`` report ``HIT``, ``MISS`` or ``STALE``, and\n``meta.age_seconds`` gives the age of the underlying data. Pass\n``?refresh=true`` to force a re-fetch.\n\n**Failure handling.** Providers are called concurrently, and each one's\noutcome appears in ``meta.sources`` as ``ok``, ``empty``, ``failed`` or\n``circuit_open``:\n\n* one provider down -> the other's reports are still returned,\n  ``meta.degraded = true``, and the partial result is cached only briefly\n  so recovery is picked up quickly;\n* both down, something cached -> the cached payload is served with\n  ``X-Cache: STALE`` and ``meta.degraded = true``. A responder is far better\n  served by five-minute-old reports than by an error;\n* both down, nothing cached -> 502, the only case where this endpoint fails.\n\n**Prioritisation.** Each report is scored by a deterministic, explainable\nclassifier into ``critical``/``high``/``medium``/``low``, with\n``matched_signals`` listing the rules that fired. Results are sorted most\nurgent first.",
+        "operationId": "get_reports_api_v1_disasters__disaster_id__reports_get",
+        "parameters": [
+          {
+            "name": "disaster_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Disaster Id"
+            }
+          },
+          {
+            "name": "priority",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ReportPriority"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Return only reports in this priority bucket",
+              "title": "Priority"
+            },
+            "description": "Return only reports in this priority bucket"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "refresh",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Bypass the cache and re-fetch from the providers",
+              "default": false,
+              "title": "Refresh"
+            },
+            "description": "Bypass the cache and re-fetch from the providers"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportsResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Disaster not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "All providers failed and nothing was cached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/disasters": {
+      "post": {
+        "tags": [
+          "Disasters"
+        ],
+        "summary": "Create a disaster",
+        "description": "Create an incident.\n\n**Location resolution.** If ``latitude``/``longitude`` are omitted, the\nservice infers the location from ``description`` - extracting a place name\nand geocoding it. Explicit coordinates always win, and the resolution method\nis reported back in ``location.source`` with a ``location.confidence`` score.\n\nResolution never blocks the write: if nothing can be resolved, the incident\nis still created with ``location.point = null``.\n\n**Authorization:** ``admin`` or ``contributor``.\n\n**Emits:** ``disaster_created`` on the real-time channel.",
+        "operationId": "create_disaster_api_v1_disasters_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DisasterCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DisasterResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Role or ownership check failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Disaster not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Disasters"
+        ],
+        "summary": "List disasters with filters",
+        "description": "List incidents.\n\nFilters combine with AND. Supplying ``lat``/``lng``/``radius_km`` restricts\nresults to incidents whose resolved location falls inside the radius, using\nthe same PostGIS ``ST_DWithin`` path as the nearby-resources search, and adds\na ``distance_km`` to each item.\n\nThis endpoint is public (no token needed) so the map demo can render without\ncredentials. Every write endpoint is authenticated.",
+        "operationId": "list_disasters_api_v1_disasters_get",
+        "parameters": [
+          {
+            "name": "tag",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exact tag match, e.g. `?tag=flood`",
+              "title": "Tag"
+            },
+            "description": "Exact tag match, e.g. `?tag=flood`"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/DisasterStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by lifecycle status",
+              "title": "Status"
+            },
+            "description": "Filter by lifecycle status"
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 2,
+                  "maxLength": 100
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Substring of title/description",
+              "title": "Q"
+            },
+            "description": "Substring of title/description"
+          },
+          {
+            "name": "created_by",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by creator id",
+              "title": "Created By"
+            },
+            "description": "Filter by creator id"
+          },
+          {
+            "name": "lat",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "maximum": 90,
+                  "minimum": -90
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Lat"
+            }
+          },
+          {
+            "name": "lng",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "maximum": 180,
+                  "minimum": -180
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Lng"
+            }
+          },
+          {
+            "name": "radius_km",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "maximum": 20000,
+                  "exclusiveMinimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Requires lat and lng",
+              "title": "Radius Km"
+            },
+            "description": "Requires lat and lng"
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "created_at | -created_at | title | -title | distance",
+              "default": "-created_at",
+              "title": "Sort"
+            },
+            "description": "created_at | -created_at | title | -title | distance"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "Rows per page (max 100)",
+              "default": 20,
+              "title": "Limit"
+            },
+            "description": "Rows per page (max 100)"
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Rows to skip",
+              "default": 0,
+              "title": "Offset"
+            },
+            "description": "Rows to skip"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_DisasterResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/api/v1/disasters/{disaster_id}": {
+      "get": {
+        "tags": [
+          "Disasters"
+        ],
+        "summary": "Fetch one disaster",
+        "operationId": "get_disaster_api_v1_disasters__disaster_id__get",
+        "parameters": [
+          {
+            "name": "disaster_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Disaster Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DisasterResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Disasters"
+        ],
+        "summary": "Partially update a disaster",
+        "description": "Update an incident. Only the fields present in the body are changed.\n\n**Authorization:** ``admin`` may update any record; ``contributor`` may\nupdate **only records they created** - a 403 otherwise. This is the\nownership rule the brief asks to be demonstrated, and it is enforced in the\nservice layer where the record is loaded.\n\n**Location.** Changing ``description`` re-runs resolution unless explicit\ncoordinates are supplied in the same request. Pass\n``\"reresolve_location\": true`` to force it.\n\n**Emits:** ``disaster_updated``, carrying the list of changed fields.",
+        "operationId": "update_disaster_api_v1_disasters__disaster_id__patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "disaster_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Disaster Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DisasterUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DisasterResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Role or ownership check failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Disaster not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Disasters"
+        ],
+        "summary": "Delete a disaster (admin only)",
+        "description": "Delete an incident.\n\n**Authorization:** ``admin`` only - the second half of the demonstrated\nauthorization rule. A contributor receives 403 even for their own record,\nbecause deletion destroys shared situational awareness in a way that editing\ndoes not.\n\nReturns 204 with no body, and records the deletion in the audit log.\n\n**Emits:** ``disaster_deleted``.",
+        "operationId": "delete_disaster_api_v1_disasters__disaster_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "disaster_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Disaster Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Role or ownership check failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Disaster not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/disasters/{disaster_id}/audit": {
+      "get": {
+        "tags": [
+          "Disasters"
+        ],
+        "summary": "Audit trail for a disaster",
+        "description": "Who changed this incident, what they changed, and when.",
+        "operationId": "get_audit_trail_api_v1_disasters__disaster_id__audit_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "disaster_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Disaster Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 25,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "title": "Response Get Audit Trail Api V1 Disasters  Disaster Id  Audit Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/events/stream": {
+      "get": {
+        "tags": [
+          "Real-time"
+        ],
+        "summary": "Server-Sent Events stream of disaster events",
+        "description": "Subscribe to live events over SSE.\n\nVerify it with::\n\n    curl -N http://localhost:8000/api/v1/events/stream\n\nthen create or update a disaster in another terminal and watch the event\narrive. A ``: heartbeat`` comment line is emitted every 20s to keep\nintermediaries from closing an idle connection.",
+        "operationId": "sse_stream_api_v1_events_stream_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "DisasterCreate": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 3,
+            "title": "Title"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 10000,
+            "minLength": 10,
+            "title": "Description"
+          },
+          "tags": {
+            "items": {
+              "type": "string",
+              "maxLength": 40,
+              "minLength": 1,
+              "pattern": "^[a-z0-9][a-z0-9_-]*$"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Tags"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DisasterStatus",
+            "default": "reported"
+          },
+          "latitude": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 90.0,
+                "minimum": -90.0,
+                "description": "Degrees north, WGS 84 (EPSG:4326)"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latitude"
+          },
+          "longitude": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 180.0,
+                "minimum": -180.0,
+                "description": "Degrees east, WGS 84 (EPSG:4326)"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Longitude"
+          },
+          "location_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 300
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Name"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "title",
+          "description"
+        ],
+        "title": "DisasterCreate",
+        "example": {
+          "description": "Heavy flooding has affected Manhattan, NYC. Several subway stations are submerged.",
+          "status": "reported",
+          "tags": [
+            "flood",
+            "urgent"
+          ],
+          "title": "Manhattan Flash Flooding"
+        }
+      },
+      "DisasterCreator": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "username": {
+            "type": "string",
+            "title": "Username"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "username",
+          "role"
+        ],
+        "title": "DisasterCreator"
+      },
+      "DisasterResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "location": {
+            "$ref": "#/components/schemas/LocationInfo"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tags"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DisasterStatus"
+          },
+          "created_by": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By"
+          },
+          "creator": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DisasterCreator"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "distance_km": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distance Km"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "description",
+          "location",
+          "tags",
+          "status",
+          "created_by",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "DisasterResponse"
+      },
+      "DisasterStatus": {
+        "type": "string",
+        "enum": [
+          "reported",
+          "verified",
+          "in_progress",
+          "resolved",
+          "archived"
+        ],
+        "title": "DisasterStatus",
+        "description": "Lifecycle of an incident."
+      },
+      "DisasterUpdate": {
+        "properties": {
+          "title": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200,
+                "minLength": 3
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10000,
+                "minLength": 10
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "maxLength": 40,
+                  "minLength": 1,
+                  "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                },
+                "type": "array",
+                "maxItems": 20
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tags"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DisasterStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "latitude": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 90.0,
+                "minimum": -90.0,
+                "description": "Degrees north, WGS 84 (EPSG:4326)"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latitude"
+          },
+          "longitude": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 180.0,
+                "minimum": -180.0,
+                "description": "Degrees east, WGS 84 (EPSG:4326)"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Longitude"
+          },
+          "location_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 300
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Name"
+          },
+          "reresolve_location": {
+            "type": "boolean",
+            "title": "Reresolve Location",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "DisasterUpdate",
+        "description": "PATCH body. Every field optional; absent means \"leave unchanged\".\n\n``exclude_unset`` at the call site is what distinguishes \"not provided\" from\n\"explicitly set to null\" - which is why partial update needs its own model\nrather than a create model with defaults."
+      },
+      "GeoPoint": {
+        "properties": {
+          "latitude": {
+            "type": "number",
+            "maximum": 90.0,
+            "minimum": -90.0,
+            "title": "Latitude",
+            "description": "Degrees north, WGS 84 (EPSG:4326)"
+          },
+          "longitude": {
+            "type": "number",
+            "maximum": 180.0,
+            "minimum": -180.0,
+            "title": "Longitude",
+            "description": "Degrees east, WGS 84 (EPSG:4326)"
+          },
+          "geojson": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Geojson",
+            "description": "GeoJSON representation, for clients that want to feed a map directly.",
+            "readOnly": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "latitude",
+          "longitude",
+          "geojson"
+        ],
+        "title": "GeoPoint",
+        "description": "A resolved coordinate pair.\n\nExposed as explicit ``latitude``/``longitude`` rather than a GeoJSON\n``[lng, lat]`` array. GeoJSON's longitude-first ordering is a notorious\nsource of transposed-coordinate bugs; named fields make the mistake\nimpossible for an API consumer to make silently."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthStatus": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "environment": {
+            "type": "string",
+            "title": "Environment"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "version",
+          "environment",
+          "timestamp"
+        ],
+        "title": "HealthStatus"
+      },
+      "LocationInfo": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "point": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GeoPoint"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source",
+            "description": "How the location was derived: llm+nominatim, rules+nominatim, rules+gazetteer, manual, or unresolved"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          }
+        },
+        "type": "object",
+        "title": "LocationInfo",
+        "description": "Resolved location plus its provenance.\n\n``source`` and ``confidence`` travel with the coordinates so a consumer can\ndecide how much to trust them. An inferred point and a human-entered point\nare not interchangeable when you are dispatching a rescue team."
+      },
+      "LoginRequest": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 3,
+            "title": "Username"
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 6,
+            "title": "Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "title": "LoginRequest",
+        "example": {
+          "password": "admin123",
+          "username": "admin"
+        }
+      },
+      "NearbySearchResponse": {
+        "properties": {
+          "center": {
+            "$ref": "#/components/schemas/GeoPoint"
+          },
+          "center_source": {
+            "type": "string",
+            "title": "Center Source",
+            "description": "'query' if supplied by the caller, else 'disaster'"
+          },
+          "radius_km": {
+            "type": "number",
+            "title": "Radius Km"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ResourceResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "center",
+          "center_source",
+          "radius_km",
+          "count",
+          "items"
+        ],
+        "title": "NearbySearchResponse",
+        "description": "Echoes the effective search parameters alongside the results.\n\nThe centre point may have been derived from the disaster rather than sent by\nthe caller, so returning it removes any ambiguity about what was searched."
+      },
+      "PageMeta": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "description": "Total rows matching the filter, ignoring pagination"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset"
+          },
+          "has_more": {
+            "type": "boolean",
+            "title": "Has More",
+            "readOnly": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "limit",
+          "offset",
+          "has_more"
+        ],
+        "title": "PageMeta",
+        "description": "Pagination envelope metadata."
+      },
+      "Page_DisasterResponse_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DisasterResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/PageMeta"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "meta"
+        ],
+        "title": "Page[DisasterResponse]"
+      },
+      "Page_ResourceResponse_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ResourceResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/PageMeta"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "meta"
+        ],
+        "title": "Page[ResourceResponse]"
+      },
+      "ProblemDetail": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "status": {
+            "type": "integer",
+            "title": "Status"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          },
+          "instance": {
+            "type": "string",
+            "title": "Instance"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "errors": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Errors"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail",
+          "instance",
+          "code"
+        ],
+        "title": "ProblemDetail",
+        "description": "RFC 9457 error body. Declared so it appears in the OpenAPI document.",
+        "example": {
+          "code": "not_found",
+          "detail": "Disaster 7c9e6679-7425-40de-944b-e07fc1f90ae7 does not exist",
+          "instance": "/api/v1/disasters/7c9e6679-7425-40de-944b-e07fc1f90ae7",
+          "request_id": "018f3c2e-9b1a-7c3d-8e4f-1a2b3c4d5e6f",
+          "status": 404,
+          "title": "Resource not found",
+          "type": "https://docs.drp.local/errors/not_found"
+        }
+      },
+      "ReadinessStatus": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "checks": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Checks"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "checks",
+          "timestamp"
+        ],
+        "title": "ReadinessStatus",
+        "description": "Readiness is about dependencies; liveness is about the process.\n\nKept separate so an orchestrator restarts a hung process but merely stops\nrouting traffic to an instance whose database is briefly unreachable."
+      },
+      "Report": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "description": "'social' or 'official'"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider",
+            "description": "Which upstream produced this"
+          },
+          "author": {
+            "type": "string",
+            "title": "Author"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "location_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Hint"
+          },
+          "verified": {
+            "type": "boolean",
+            "title": "Verified",
+            "default": false
+          },
+          "priority": {
+            "$ref": "#/components/schemas/ReportPriority",
+            "default": "low"
+          },
+          "priority_score": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Priority Score",
+            "default": 0.0
+          },
+          "matched_signals": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Matched Signals",
+            "description": "Which rules fired. Present so the ranking is auditable rather than an opaque score."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "source",
+          "provider",
+          "author",
+          "content",
+          "created_at"
+        ],
+        "title": "Report",
+        "description": "One normalised community or official report.\n\nEvery provider gets flattened into this. The mock social service returns\n``{content, user, created_at}``; the official bulletin feed returns\n``{headline, body, issued_at, agency}``. Normalising at the boundary means\nthe rest of the system never branches on provider.",
+        "example": {
+          "author": "citizen123",
+          "content": "Need drinking water near Manhattan, we have been without since 6am",
+          "created_at": "2026-09-27T09:14:00Z",
+          "id": "social-8f21",
+          "matched_signals": [
+            "need_water",
+            "duration_mentioned"
+          ],
+          "priority": "high",
+          "priority_score": 0.72,
+          "provider": "mock-social-api",
+          "source": "social",
+          "verified": false
+        }
+      },
+      "ReportPriority": {
+        "type": "string",
+        "enum": [
+          "critical",
+          "high",
+          "medium",
+          "low"
+        ],
+        "title": "ReportPriority",
+        "description": "Triage bucket assigned by the classifier (see services/classification.py)."
+      },
+      "ReportsMeta": {
+        "properties": {
+          "cache": {
+            "type": "string",
+            "title": "Cache",
+            "description": "HIT | MISS | STALE | BYPASS"
+          },
+          "age_seconds": {
+            "type": "number",
+            "title": "Age Seconds",
+            "description": "Age of the underlying data"
+          },
+          "degraded": {
+            "type": "boolean",
+            "title": "Degraded",
+            "description": "True when at least one provider failed and cached or fallback data was served instead",
+            "default": false
+          },
+          "sources": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Sources",
+            "description": "Per-provider outcome: ok | cached | failed | circuit_open"
+          },
+          "total_fetched": {
+            "type": "integer",
+            "title": "Total Fetched",
+            "default": 0
+          },
+          "counts_by_priority": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Counts By Priority"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cache",
+          "age_seconds"
+        ],
+        "title": "ReportsMeta",
+        "description": "Everything the caller needs to judge how much to trust this payload.\n\nA degraded response returns 200, not 502: stale reports are far more useful\nto a responder than an error page. But it must say so, loudly and in-band -\nsilently serving stale data as if it were live would be the actual failure."
+      },
+      "ReportsResponse": {
+        "properties": {
+          "disaster_id": {
+            "type": "string",
+            "title": "Disaster Id"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Report"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/ReportsMeta"
+          }
+        },
+        "type": "object",
+        "required": [
+          "disaster_id",
+          "items",
+          "meta"
+        ],
+        "title": "ReportsResponse"
+      },
+      "ResourceCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 2,
+            "title": "Name"
+          },
+          "type": {
+            "$ref": "#/components/schemas/ResourceType"
+          },
+          "latitude": {
+            "type": "number",
+            "maximum": 90.0,
+            "minimum": -90.0,
+            "title": "Latitude",
+            "description": "Degrees north, WGS 84 (EPSG:4326)"
+          },
+          "longitude": {
+            "type": "number",
+            "maximum": 180.0,
+            "minimum": -180.0,
+            "title": "Longitude",
+            "description": "Degrees east, WGS 84 (EPSG:4326)"
+          },
+          "address": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
+          "capacity": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1000000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capacity"
+          },
+          "contact": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 120
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contact"
+          },
+          "disaster_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disaster Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "type",
+          "latitude",
+          "longitude"
+        ],
+        "title": "ResourceCreate",
+        "example": {
+          "address": "462 1st Ave, New York, NY 10016",
+          "capacity": 850,
+          "latitude": 40.7392,
+          "longitude": -73.9762,
+          "name": "Bellevue Hospital Center",
+          "type": "hospital"
+        }
+      },
+      "ResourceResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "type": {
+            "$ref": "#/components/schemas/ResourceType"
+          },
+          "location": {
+            "$ref": "#/components/schemas/GeoPoint"
+          },
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
+          "capacity": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capacity"
+          },
+          "contact": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contact"
+          },
+          "is_active": {
+            "type": "boolean",
+            "title": "Is Active"
+          },
+          "disaster_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disaster Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "distance_km": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distance Km",
+            "description": "Great-circle distance from the query point, kilometres"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "type",
+          "location",
+          "is_active",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ResourceResponse"
+      },
+      "ResourceType": {
+        "type": "string",
+        "enum": [
+          "shelter",
+          "hospital",
+          "food",
+          "water",
+          "rescue",
+          "medical_supply",
+          "evacuation_point"
+        ],
+        "title": "ResourceType",
+        "description": "Kinds of response resource. The brief names the first five."
+      },
+      "TokenResponse": {
+        "properties": {
+          "access_token": {
+            "type": "string",
+            "title": "Access Token"
+          },
+          "token_type": {
+            "type": "string",
+            "title": "Token Type",
+            "default": "bearer"
+          },
+          "expires_in": {
+            "type": "integer",
+            "title": "Expires In",
+            "description": "Token lifetime in seconds"
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserPublic"
+          }
+        },
+        "type": "object",
+        "required": [
+          "access_token",
+          "expires_in",
+          "user"
+        ],
+        "title": "TokenResponse"
+      },
+      "UserPublic": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "username": {
+            "type": "string",
+            "title": "Username"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "role": {
+            "$ref": "#/components/schemas/UserRole"
+          },
+          "is_active": {
+            "type": "boolean",
+            "title": "Is Active"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "username",
+          "role",
+          "is_active",
+          "created_at"
+        ],
+        "title": "UserPublic",
+        "description": "The only user representation that ever leaves the service.\n\n``password_hash`` is absent by construction rather than stripped on the way\nout - a field that does not exist on the response model cannot be leaked by\na future careless change."
+      },
+      "UserRole": {
+        "type": "string",
+        "enum": [
+          "admin",
+          "contributor",
+          "responder"
+        ],
+        "title": "UserRole",
+        "description": "Roles, ordered loosely from most to least privileged."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "description": "JWT from POST /auth/login",
+        "scheme": "bearer"
+      }
+    }
+  }
+}
