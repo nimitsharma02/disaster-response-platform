@@ -1,0 +1,101 @@
+name: disaster-response
+
+services:
+  db:
+    # postgis/postgis bundles PostGIS 3.4 with Postgres 16 - no manual extension build.
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-drp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-drp_local_password}
+      POSTGRES_DB: ${POSTGRES_DB:-disaster_response}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/init_test_db.sql:/docker-entrypoint-initdb.d/10-init-test-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-drp} -d ${POSTGRES_DB:-disaster_response}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  mock-services:
+    # Deliberately a SEPARATE process behind a real HTTP boundary, so timeouts,
+    # retries and the circuit breaker are exercised for real rather than faked.
+    build: .
+    command: ["uvicorn", "mock_services.main:app", "--host", "0.0.0.0", "--port", "9000"]
+    environment:
+      MOCK_FAILURE_RATE: ${MOCK_FAILURE_RATE:-0.0}
+      MOCK_LATENCY_MS: ${MOCK_LATENCY_MS:-120}
+    ports:
+      - "${MOCK_PORT:-9000}:9000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: .
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-drp}:${POSTGRES_PASSWORD:-drp_local_password}@db:5432/${POSTGRES_DB:-disaster_response}
+      TEST_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-drp}:${POSTGRES_PASSWORD:-drp_local_password}@db:5432/disaster_response_test
+      REDIS_URL: redis://redis:6379/0
+      SOCIAL_API_BASE_URL: http://mock-services:9000
+      OFFICIAL_API_BASE_URL: http://mock-services:9000
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      mock-services: {condition: service_started}
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    volumes:
+      - ./app:/srv/app
+      - ./tests:/srv/tests
+      - ./scripts:/srv/scripts
+      - ./migrations:/srv/migrations
+      - ./mock_services:/srv/mock_services
+      # The demo map client, served by the API at /demo/.
+      - ./web:/srv/web
+      # Writable: `python -m scripts.export_openapi` writes docs/openapi.json
+      # here, so the generated spec lands in the repo rather than inside the
+      # container where nobody would ever see it.
+      - ./docs:/srv/docs
+      # Mounted so pytest/ruff configuration can be changed without an image
+      # rebuild. Without this the container silently keeps the copy baked in at
+      # build time, and edits to [tool.pytest.ini_options] appear to do nothing.
+      - ./pyproject.toml:/srv/pyproject.toml:ro
+      - ./alembic.ini:/srv/alembic.ini:ro
+
+  worker:
+    # Optional. The API is fully functional without it - the worker only pre-warms
+    # caches, it is never on the request critical path.
+    build: .
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-drp}:${POSTGRES_PASSWORD:-drp_local_password}@db:5432/${POSTGRES_DB:-disaster_response}
+      REDIS_URL: redis://redis:6379/0
+      SOCIAL_API_BASE_URL: http://mock-services:9000
+      OFFICIAL_API_BASE_URL: http://mock-services:9000
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    command: ["arq", "app.workers.settings.WorkerSettings"]
+    volumes:
+      - ./app:/srv/app
+
+volumes:
+  pgdata:
