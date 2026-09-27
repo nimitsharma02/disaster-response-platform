@@ -17,7 +17,7 @@
   ask for a frontend, so this is a demonstration surface, not a product.
 -->
 
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="vendor/leaflet.min.css">
 <style>
   :root {
     --bg: #0f1419; --panel: #1a2029; --panel-2: #222a35; --line: #2f3946;
@@ -77,6 +77,10 @@
   .ok  { color: var(--low); font-size: 12px; margin-top: 8px; }
   .leaflet-popup-content-wrapper, .leaflet-popup-tip {
     background: var(--panel-2); color: var(--text); }
+  #tileWarning { display: none; position: fixed; bottom: 14px; right: 14px;
+    z-index: 1000; max-width: 320px; padding: 10px 12px; border-radius: 8px;
+    background: var(--panel-2); border: 1px solid var(--high);
+    color: var(--text); font-size: 12px; }
 </style>
 </head>
 <body>
@@ -135,16 +139,45 @@
 </div>
 
 <div id="map"></div>
+<div id="tileWarning">Map tiles could not be loaded, the tile server is unreachable or blocked. Incident and resource markers still work.</div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="vendor/leaflet.min.js"></script>
 <script>
 const API = "/api/v1";
 const $ = (id) => document.getElementById(id);
 
 const map = L.map("map", { zoomControl: true }).setView([20, 20], 2);
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  attribution: "&copy; OpenStreetMap contributors", maxZoom: 19,
-}).addTo(map);
+
+// Public tile servers rate limit and sometimes block. Fall back rather than
+// leaving a blank map, and keep the markers usable either way.
+const TILE_SERVERS = [
+  "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+  "https://tile.openstreetmap.de/{z}/{x}/{y}.png",
+  "https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png",
+];
+let tileIndex = 0;
+let tileLayer = null;
+
+function loadTiles(index) {
+  if (tileLayer) map.removeLayer(tileLayer);
+  let failures = 0;
+  tileLayer = L.tileLayer(TILE_SERVERS[index], {
+    attribution: "&copy; OpenStreetMap contributors",
+    maxZoom: 19,
+  });
+  tileLayer.on("tileerror", () => {
+    failures += 1;
+    if (failures !== 5) return;
+    if (index + 1 < TILE_SERVERS.length) {
+      tileIndex = index + 1;
+      loadTiles(tileIndex);
+    } else {
+      $("tileWarning").style.display = "block";
+    }
+  });
+  tileLayer.addTo(map);
+}
+loadTiles(tileIndex);
 
 const disasterLayer = L.layerGroup().addTo(map);
 const resourceLayer = L.layerGroup().addTo(map);
